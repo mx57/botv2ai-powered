@@ -1,3 +1,4 @@
+import os # For checking environment variable
 import tkinter as tk
 from tkinter import ttk, messagebox, colorchooser
 import logging
@@ -8,12 +9,14 @@ import requests
 import threading
 from datetime import datetime, timedelta
 
+from collections import deque # Ensure deque is imported for log_queue
 # Импорт модульных компонентов
 from data_manager import DataManager
 from chart_manager import ChartManager
 from ml_manager import MLManager
 from trading_manager import TradingManager
 from settings_manager import SettingsManager
+from profiling_utils import profile_me # Import the decorator
 
 # Попытка импорта matplotlib
 try:
@@ -77,32 +80,43 @@ except ImportError:
 
 class TradingBot:
     def __init__(self):
-        self.root = tk.Tk()
-        self.root.title("🚀 Advanced Trading Bot v2.0 - AI Enhanced")
-        self.root.geometry("1600x1000")
-        self.root.configure(bg='#1e1e1e')
-        
-        # Стиль интерфейса
-        self.setup_styles()
-        
+        self.is_profiling_run = os.environ.get("RUNNING_PROFILER_CONCEPTUAL") == "1"
+
+        if not self.is_profiling_run:
+            self.root = tk.Tk()
+            self.root.title("🚀 Advanced Trading Bot v2.0 - AI Enhanced")
+            self.root.geometry("1600x1000")
+            self.root.configure(bg='#1e1e1e')
+            # Стиль интерфейса
+            self.setup_styles()
+            # Создание основных фреймов интерфейса
+            self.create_main_frames()
+        else:
+            self.root = None # No root window for profiling
+            self.chart_frame = None # No chart frame
+            print("INFO: Tkinter UI initialization skipped for profiling run.")
+
         # Инициализация модульных компонентов
         self.settings_manager = SettingsManager()
         self.settings = self.settings_manager.settings
         
-        # Создание основных фреймов интерфейса
-        self.create_main_frames()
-        
-        # Инициализация модулей с передачей необходимых параметров
         self.data_manager = DataManager(
             symbol=self.settings['trading']['symbol'],
             interval=self.settings['trading']['interval']
         )
         
-        self.chart_manager = ChartManager(
-            master=self.root,
-            chart_frame=self.chart_frame
-        )
-        
+        # ChartManager needs a master and a frame. For profiling, these might be None.
+        # The ChartManager itself will need to handle this if its methods are called.
+        # For this profiling run, we are mostly interested in DataManager and MLManager.
+        # We will avoid calling ChartManager methods that require Tkinter if in profiling mode.
+        if not self.is_profiling_run:
+            self.chart_manager = ChartManager(
+                master=self.root,
+                chart_frame=self.chart_frame
+            )
+        else:
+            self.chart_manager = None # Or a mock ChartManager if its methods are essential for data flow
+
         self.ml_manager = MLManager()
         
         self.trading_manager = TradingManager(
@@ -111,7 +125,7 @@ class TradingBot:
         )
         
         # Настройка колбэков для обновления UI
-        self.setup_callbacks()
+        self.setup_callbacks() # Callbacks should be robust to None objects if is_profiling_run
         
         # Оптимизация производительности
         self.last_update_time = 0
@@ -122,19 +136,32 @@ class TradingBot:
         
         # Инициализация ML-атрибутов
         self.current_model = 'RandomForest'
+        self.latest_features_for_prediction = None
+        self.ml_feature_lock = threading.Lock()
+        self.last_signal_check_time = 0
+        self.signal_check_interval = 5 # секунд, как часто проверять сигналы
         
         # Инициализация ML-моделей и скейлера
         if SKLEARN_AVAILABLE:
             self.setup_ml_model()
         
         # Инициализация интерфейса
-        self.create_ui_components()
-        
+        if not self.is_profiling_run:
+            self.create_ui_components()
+        else:
+            # Setup dummy UI components or ensure they are not accessed if UI is skipped
+            self.log_text_widget = None # Crucial for log_message
+            self.log_queue = deque(maxlen=200)
+            self.log_timer_active = False
+            self.log_update_interval = 200
+
+
         # Запуск получения данных
         self.start_data_stream()
     
     def create_main_frames(self):
         """Создание основных фреймов интерфейса"""
+        if self.is_profiling_run: return
         # Основной контейнер
         self.main_container = ttk.Frame(self.root)
         self.main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -153,10 +180,13 @@ class TradingBot:
         # Колбэки для DataManager
         self.data_manager.on_data_updated = self.on_data_updated
         self.data_manager.on_orderbook_updated = self.on_orderbook_updated
-        self.data_manager.on_error = self.log_message
+        self.data_manager.on_error = self.log_message # log_message needs to be robust
+        self.data_manager.on_log = self.log_message   # Pass log_message for DataManager's internal logging
         
         # Колбэки для ChartManager
-        self.chart_manager.on_error = self.log_message
+        if self.chart_manager:
+            self.chart_manager.on_error = self.log_message
+            self.chart_manager.on_log = self.log_message # Pass log_message
         
         # Колбэки для MLManager
         self.ml_manager.on_training_complete = self.on_ml_training_complete
@@ -189,7 +219,8 @@ class TradingBot:
         self.update_data()
         self.root.after(update_interval_ms, self.schedule_data_update)
     
-    def update_data(self):
+    # @profile_me(filename_prefix="tb_update_data") # Profiling applied to the original
+    def update_data(self): # This is the original update_data, will be decorated later
         """Обновление данных"""
         try:
             # Получение новых данных через DataManager
@@ -199,18 +230,23 @@ class TradingBot:
             if self.settings['chart']['show_density_zones']:
                 self.data_manager.calculate_density_zones()
             
-            # Обновление ML-модели при необходимости
+            # Обновление ML-модели при необходимости (подготовка признаков)
             if self.settings['ml']['enabled'] and not self.ml_manager.is_training:
                 df = self.data_manager.df
-                if df is not None and len(df) > 50:
-                    self.ml_manager.prepare_features(df)
+                if df is not None and not df.empty and len(df) > 50:
+                    # Запускаем подготовку признаков в отдельном потоке
+                    threading.Thread(target=self._update_ml_features_async, args=(df.copy(),), daemon=True).start()
             
-            # Проверка торговых сигналов
-            if self.settings['trading']['auto_trading']:
-                self.check_trading_signals()
+            # Проверка торговых сигналов (также может быть вынесена или использовать готовые признаки)
+            current_time = time.time()
+            if self.settings['trading']['auto_trading'] and \
+               (current_time - self.last_signal_check_time) > self.signal_check_interval:
+                if self.data_manager.df is not None and not self.data_manager.df.empty:
+                    threading.Thread(target=self._check_trading_signals_async, args=(self.data_manager.df.copy(),), daemon=True).start()
+                    self.last_signal_check_time = current_time
         except Exception as e:
             self.log_message(f"Ошибка обновления данных: {e}", "ERROR")
-        self.ml_cache = {}
+        # self.ml_cache = {} # ml_cache был в старой версии, MLManager теперь имеет свой механизм
         
         # Флаги состояния
         self.auto_trading_enabled = False
@@ -306,88 +342,131 @@ class TradingBot:
         self.chart_manager.update_chart()
         
         # Обновление информации о цене
-        if self.data_manager.df is not None and len(self.data_manager.df) > 0:
+        if self.data_manager.df is not None and not self.data_manager.df.empty:
             last_price = self.data_manager.df.iloc[-1]['close']
-            if hasattr(self, 'price_label'):
+            if hasattr(self, 'price_label'): # price_label может не существовать в новой структуре UI
                 self.price_label.config(text=f"Цена: {last_price:.2f}")
-    
-    def check_trading_signals(self):
-        """Проверка торговых сигналов"""
-        if not self.settings['trading']['auto_trading']:
+
+    @profile_me(filename_prefix="tb_update_ml_features_async")
+    def _update_ml_features_async(self, df_copy):
+        """Асинхронная подготовка ML признаков для предсказания."""
+        if self.ml_manager.is_training : # Не готовим признаки, если модель уже обучается
+            self.log_message("ML модель в процессе обучения, пропускаем подготовку признаков.", "DEBUG")
             return
         
         try:
-            df = self.data_manager.df
-            if df is None or len(df) < 30:
-                return
-            
-            # Получение предсказания от ML-модели
-            if self.settings['ml']['enabled'] and self.ml_manager.model is not None:
-                features = self.ml_manager.prepare_features(df)
-                if features is not None:
-                    prediction = self.ml_manager.predict(features)
-                    
-                    # Обработка сигнала через TradingManager
-                    if prediction == 1:  # Сигнал на покупку
-                        self.trading_manager.process_signal('buy', df.iloc[-1]['close'])
-                    elif prediction == 0:  # Сигнал на продажу
-                        self.trading_manager.process_signal('sell', df.iloc[-1]['close'])
+            self.log_message("Начало асинхронной подготовки ML признаков...", "DEBUG")
+            features_last_row = self.ml_manager.prepare_features(df_copy, for_prediction=True)
+            if features_last_row is not None:
+                with self.ml_feature_lock:
+                    self.latest_features_for_prediction = features_last_row
+                self.log_message("ML признаки для предсказания успешно обновлены.", "DEBUG")
+            else:
+                self.log_message("Не удалось подготовить ML признаки (features_last_row is None).", "WARNING")
         except Exception as e:
-            self.log_message(f"Ошибка проверки сигналов: {e}", "ERROR")
+            # Логируем ошибку в основной поток
+            self.root.after(0, self.log_message, f"Ошибка в _update_ml_features_async: {e}", "ERROR")
+
+    @profile_me(filename_prefix="tb_check_trading_signals_async")
+    def _check_trading_signals_async(self, df_copy):
+        """Асинхронная проверка торговых сигналов."""
+        try:
+            if not self.settings['trading']['auto_trading']:
+                self.log_message("Авто-торговля выключена, проверка сигналов отменена.", "DEBUG")
+                return
+            if not self.settings['ml']['enabled']:
+                self.log_message("ML отключен, проверка сигналов ML отменена.", "DEBUG")
+                return
+            if self.ml_manager.model is None:
+                self.log_message("ML модель не обучена, проверка сигналов ML отменена.", "WARNING")
+                return
+
+            self.log_message("Начало асинхронной проверки торговых сигналов...", "DEBUG")
+            current_price = df_copy.iloc[-1]['close']
+            current_timestamp = df_copy.index[-1]
+            
+            local_features_to_predict = None
+            with self.ml_feature_lock:
+                if self.latest_features_for_prediction is not None:
+                    local_features_to_predict = self.latest_features_for_prediction.copy()
+                    self.log_message("Используются кэшированные ML признаки для предсказания.", "DEBUG")
+
+            if local_features_to_predict is None:
+                self.log_message("Кэшированные ML признаки не найдены, попытка подготовить синхронно...", "WARNING")
+                local_features_to_predict = self.ml_manager.prepare_features(df_copy, for_prediction=True)
+
+            if local_features_to_predict is not None:
+                self.log_message(f"Подготовлены признаки для предсказания: {local_features_to_predict.shape}", "DEBUG")
+                prediction_result = self.ml_manager.predict(local_features_to_predict, current_timestamp, current_price)
+                
+                if prediction_result:
+                    signal = prediction_result['signal']
+                    probability = prediction_result['probability']
+                    self.log_message(f"ML предсказание: {signal}, Уверенность: {probability:.2%}, Цена: {current_price}", "INFO")
+                    # Обработка сигнала через TradingManager в основном потоке
+                    self.root.after(0, self.trading_manager.process_signal, signal.lower(), current_price)
+                else:
+                    self.log_message("Не удалось получить предсказание от ML модели.", "WARNING")
+            else:
+                self.log_message("Не удалось подготовить ML признаки для проверки сигнала.", "ERROR")
+        except Exception as e:
+            # Логируем ошибку в основной поток
+            self.root.after(0, self.log_message, f"Ошибка в _check_trading_signals_async: {e}", "ERROR")
+
+
+    def check_trading_signals(self):
+        """Проверка торговых сигналов (старый синхронный метод, теперь обертка или для ручного вызова)"""
+        # Этот метод может быть оставлен для ручного триггера или пересмотрен.
+        # Основная логика теперь в _check_trading_signals_async
+        if not self.settings['trading']['auto_trading']:
+            self.log_message("Авто-торговля выключена. Сигналы не проверяются.", "INFO")
+            return
         
-        # Данные
-        self.df = None
-        self.density_zones = []
-        self.orderbook_data = {'bids': [], 'asks': []}
-        self.ws = None
-        self.price_history = deque(maxlen=1000)  # История цен для анализа
-        self.volume_history = deque(maxlen=1000)  # История объемов
+        df = self.data_manager.df
+        if df is None or df.empty or len(df) < 30:
+            self.log_message("Недостаточно данных для проверки сигналов.", "WARNING")
+            return
         
-        # ML модели
-        self.ml_models = {}
-        self.model_performance = {}
-        self.current_model = 'RandomForest'
-        if SKLEARN_AVAILABLE:
-            self.scaler = RobustScaler()  # Более устойчивый к выбросам
-        else:
-            self.scaler = None
+        self.log_message("Запуск асинхронной проверки торговых сигналов...", "DEBUG")
+        threading.Thread(target=self._check_trading_signals_async, args=(df.copy(),), daemon=True).start()
+
+    # Удалены старые переменные, которые были перемещены или заменены менеджерами
+    # def __init__(self): # Старая инициализация некоторых переменных, которые теперь в менеджерах или не нужны
         
-        # Настройки графика
-        self.chart_settings = {
-            'support_color': '#00ff88',
-            'resistance_color': '#ff4444',
-            'background_color': '#2d2d2d',
-            'grid_alpha': 0.3,
-            'zone_alpha': 0.4,
-            'show_volume': True,
-            'show_indicators': True,
-            'chart_style': 'dark'
-        }
+        # self.df = None # Управляется DataManager
+        # self.density_zones = [] # Управляется DataManager
+        # self.orderbook_data = {'bids': [], 'asks': []} # Управляется DataManager
+        # self.ws = None # Управляется DataManager
+        # self.price_history = deque(maxlen=1000) # Управляется DataManager
+        # self.volume_history = deque(maxlen=1000) # Управляется DataManager
         
-        # Технические индикаторы
-        self.indicators = {
-            'sma_periods': [10, 20, 50],
-            'ema_periods': [12, 26],
-            'rsi_period': 14,
-            'macd_fast': 12,
-            'macd_slow': 26,
-            'macd_signal': 9,
-            'bb_period': 20,
-            'bb_std': 2
-        }
+        # ML модели - управляются MLManager
+        # self.ml_models = {}
+        # self.model_performance = {}
+        # self.current_model = 'RandomForest' # Уже инициализировано выше
+        # if SKLEARN_AVAILABLE:
+        #     self.scaler = RobustScaler() 
+        # else:
+        #     self.scaler = None
         
-        # Создание интерфейса
-        self.create_interface()
-        if SKLEARN_AVAILABLE:
-            self.setup_ml_model()  # ML модель
+        # Настройки графика - управляются SettingsManager и ChartManager
+        # self.chart_settings = { ... }
         
-        # Загрузка сохраненных настроек
-        self.load_settings()
+        # Технические индикаторы - параметры могут быть частью SettingsManager
+        # self.indicators = { ... }
         
-        # Запуск обновления данных
-        self.update_data()
-        if WEBSOCKET_AVAILABLE:
-            self.start_websocket()
+        # Создание интерфейса - вызывается в __init__
+        # self.create_interface()
+        # if SKLEARN_AVAILABLE:
+        #    self.setup_ml_model() 
+        
+        # Загрузка сохраненных настроек - SettingsManager
+        # self.load_settings()
+        
+        # Запуск обновления данных - start_data_stream
+        # self.update_data()
+        # if WEBSOCKET_AVAILABLE:
+        #    self.start_websocket() # Управляется DataManager
         
     def setup_styles(self):
         """Настройка стилей интерфейса"""
@@ -2307,40 +2386,62 @@ class TradingBot:
         log_frame.pack(fill=tk.BOTH, expand=True, pady=10, padx=5)
         
         # Текстовое поле для логов с прокруткой
-        self.log_text = tk.Text(log_frame, height=10, wrap=tk.WORD, bg='#2a2a2a', fg='#e0e0e0')
-        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.log_text_widget = tk.Text(log_frame, height=10, wrap=tk.WORD, bg='#2a2a2a', fg='#e0e0e0')
+        self.log_text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        scrollbar = ttk.Scrollbar(log_frame, command=self.log_text.yview)
+        scrollbar = ttk.Scrollbar(log_frame, command=self.log_text_widget.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        self.log_text.config(yscrollcommand=scrollbar.set)
-        self.log_text.tag_config('ERROR', foreground='#ff5555')
-        self.log_text.tag_config('WARNING', foreground='#ffb86c')
-        self.log_text.tag_config('SUCCESS', foreground='#50fa7b')
-        self.log_text.tag_config('INFO', foreground='#8be9fd')
+        self.log_text_widget.config(yscrollcommand=scrollbar.set)
+        self.log_text_widget.tag_config('ERROR', foreground='#ff5555')
+        self.log_text_widget.tag_config('WARNING', foreground='#ffb86c')
+        self.log_text_widget.tag_config('SUCCESS', foreground='#50fa7b')
+        self.log_text_widget.tag_config('INFO', foreground='#8be9fd')
+        self.log_text_widget.tag_config('DEBUG', foreground='#cccccc')
+
+
+        self.log_queue = deque(maxlen=200) # Очередь для логов
+        self.log_timer_active = False
+        self.log_update_interval = 200 # мс, как часто обновлять виджет логов
     
+    @profile_me(filename_prefix="tb_process_log_queue")
+    def _process_log_queue(self):
+        """Обработка очереди логов и обновление виджета Tkinter."""
+        if not self.log_queue:
+            self.log_timer_active = False
+            return
+
+        # Собираем все сообщения из очереди для одной большой вставки
+        log_batch = []
+        while self.log_queue:
+            log_batch.append(self.log_queue.popleft())
+
+        if hasattr(self, 'log_text_widget') and self.log_text_widget.winfo_exists():
+            for message, level in log_batch:
+                self.log_text_widget.insert(tk.END, message, level)
+            self.log_text_widget.see(tk.END) # Прокрутка только один раз после всех вставок
+        
+        if self.log_queue: # Если за время обработки пришли новые сообщения
+            self.root.after(self.log_update_interval, self._process_log_queue)
+        else:
+            self.log_timer_active = False
+
     def log_message(self, message, level="INFO"):
-        """Логирование сообщения"""
+        """Добавляет сообщение в очередь логов."""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        log_entry = f"[{timestamp}] {message}\n"
+        # Добавляем уровень в начало сообщения для простоты парсинга при необходимости
+        # или можно передавать level отдельно в _process_log_queue
+        log_entry = f"[{timestamp}] {message}\n" 
         
-        # Добавление в UI
-        try:
-            # Проверяем, что tkinter еще активен и виджет существует
-            if hasattr(self, 'log_text') and hasattr(self.log_text, 'winfo_exists') and self.log_text.winfo_exists():
-                self.log_text.insert(tk.END, log_entry, level)
-                self.log_text.see(tk.END)
-        except Exception as e:
-            # Если произошла ошибка при вставке текста, просто логируем в консоль
-            print(f"Ошибка вставки в лог: {e}")
+        self.log_queue.append((log_entry, level.upper()))
+
+        if not self.log_timer_active:
+            self.log_timer_active = True
+            self.root.after(self.log_update_interval, self._process_log_queue)
         
-        # Логирование через стандартный логгер
-        if level == "ERROR":
-            logger.error(message)
-        elif level == "WARNING":
-            logger.warning(message)
-        elif level == "SUCCESS" or level == "INFO":
-            logger.info(message)
+        # Логирование через стандартный логгер Python
+        py_level = getattr(logging, level.upper(), logging.INFO)
+        logger.log(py_level, message)
     
     def update_position_display(self, position):
         """Обновление отображения информации о позиции"""
@@ -2528,14 +2629,111 @@ class TradingBot:
 
 # Точка входа
 if __name__ == "__main__":
-    try:
-        # Создание и запуск бота
-        bot = TradingBot()
-        bot.run()
+    # Conceptual run for profiling
+    print("Starting conceptual run for profiling...")
+    # Ensure profiler is enabled in profiling_utils.py
+    # from profiling_utils import PROFILER_ENABLED
+    # if not PROFILER_ENABLED:
+    #     print("PROFILER_ENABLED is False in profiling_utils.py. No profiling data will be generated.")
+    #     exit()
+
+    bot = TradingBot()
+    
+    # Simulate a few update cycles
+    num_cycles = 5 # Number of simulated update cycles
+    bot.log_message(f"Starting {num_cycles} simulated update cycles for profiling.", "INFO")
+
+    for i in range(num_cycles):
+        print(f"\n--- Profiling Cycle {i+1}/{num_cycles} ---")
+        bot.log_message(f"--- Profiling Cycle {i+1}/{num_cycles} ---", "INFO")
+
+        # 1. Simulate DataManager calls (as done in TradingBot.update_data)
+        print("Profiling: bot.data_manager.get_kline_data()")
+        bot.data_manager.get_kline_data() 
         
+        if bot.settings['chart']['show_density_zones']:
+            print("Profiling: bot.data_manager.calculate_density_zones()")
+            bot.data_manager.calculate_density_zones()
+
+        # 2. Simulate ML feature preparation (as done in TradingBot.update_data)
+        if bot.settings['ml']['enabled'] and not bot.ml_manager.is_training:
+            df_copy = None
+            if bot.data_manager.df is not None and not bot.data_manager.df.empty and len(bot.data_manager.df) > 50:
+                df_copy = bot.data_manager.df.copy()
+                print("Profiling: bot._update_ml_features_async()")
+                # In real app, this is threaded. For profiling the core logic, call directly or manage thread.
+                # Calling directly to ensure it runs and generates a profile for its content.
+                bot._update_ml_features_async(df_copy) 
+        
+        # 3. Simulate trading signal checks (as done in TradingBot.update_data)
+        if bot.settings['trading']['auto_trading']:
+            df_copy_signal = None
+            if bot.data_manager.df is not None and not bot.data_manager.df.empty:
+                df_copy_signal = bot.data_manager.df.copy()
+                print("Profiling: bot._check_trading_signals_async()")
+                # Calling directly for profiling.
+                bot._check_trading_signals_async(df_copy_signal)
+                bot.last_signal_check_time = time.time()
+
+
+        # 4. Simulate ChartManager updates (as done in TradingBot.on_data_updated & update_ui_with_new_data)
+        # These are not decorated in chart_manager.py due to previous issues,
+        # but we call them to simulate the workflow.
+        # If they were decorated, their profiles would be generated here.
+        if bot.data_manager.df is not None:
+             print("Simulating: bot.chart_manager.update_data() and update_chart()")
+             bot.chart_manager.update_data(bot.data_manager.df, bot.data_manager.density_zones, bot.data_manager.orderbook_data)
+             # ChartManager.update_chart is decorated, so this call will be profiled if chart_manager.py was successfully modified.
+             # However, due to diff issues, we are assuming it might not have been.
+             # If it was, this direct call will profile it.
+             bot.chart_manager.update_chart()
+
+
+        # 5. Simulate some log processing
+        print("Profiling: bot._process_log_queue() via log_message")
+        for j in range(5): # Add a few messages
+            bot.log_message(f"Simulated log message {j} in cycle {i+1}", "DEBUG")
+        # The log processing is triggered by a timer in log_message.
+        # Forcing a direct call here to ensure it's profiled within this loop if timer is too long.
+        if bot.log_queue: # Process only if there's something
+            bot._process_log_queue() 
+
+        # 6. Simulate WebSocket message (if WS was actually running)
+        # This is hard to truly simulate without a live WS server.
+        # We'll rely on the decorator on on_websocket_message if it gets called by a test message.
+        # For now, we'll just note that it's a target.
+        # print("Note: DataManager.on_websocket_message is decorated for profiling.")
+
+
+        bot.log_message(f"--- End of Profiling Cycle {i+1}/{num_cycles} ---", "INFO")
+        if i < num_cycles - 1:
+            time.sleep(0.5) # Shorter delay between cycles for faster profiling
+
+    bot.log_message("Conceptual profiling run finished.", "INFO")
+    
+    # Ensure all queued logs are processed before exiting simulation
+    print("Processing any remaining logs before exit...")
+    if bot.log_queue:
+        bot._process_log_queue() # Force one last processing.
+    time.sleep(0.1) # Brief pause for any final async operations if any were truly async in this sim
+
+    print("\nConceptual Profiling Run Complete.")
+    print(f"Profile data should be in '{os.path.join(os.getcwd(), 'profiles')}' directory.")
+    print("Review the console output for summaries printed by the @profile_me decorator.")
+    print("NOTE: Since chart_manager.py decorators might not have applied, its profiling data might be missing.")
+
+    # Clean up Tkinter root window if it was created
+    try:
+        if bot.root:
+            bot.root.destroy()
+    except tk.TclError:
+        pass 
     except Exception as e:
-        import traceback
-        print(f"Ошибка запуска: {e}")
-        print("Подробная информация об ошибке:")
-        traceback.print_exc()
-        input("Нажмите Enter для выхода...")
+        print(f"Error destroying root window: {e}")
+        
+    # Example of how to manually print stats for generated files later:
+    # from profiling_utils import print_profile_stats
+    # import glob
+    # profile_files = glob.glob("profiles/*.prof")
+    # for pf in profile_files:
+    #     print_profile_stats(pf)

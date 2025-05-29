@@ -31,6 +31,16 @@ class ChartManager:
         # Кэширование для оптимизации
         self.cached_data = None
         self.cached_chart_data = None
+
+        # Атрибуты для хранения художников Matplotlib
+        self.candlestick_lines = None
+        self.candlestick_bodies = []
+        self.volume_bars = []
+        self.density_zone_rects = []
+        self.orderbook_bid_rects = []
+        self.orderbook_ask_rects = []
+        
+        self.last_style_settings_hash = None # Для отслеживания изменений стиля
         
         # Оптимизация производительности
         self.last_chart_update = 0
@@ -148,7 +158,40 @@ class ChartManager:
         
         # Настройка внешнего вида
         self.setup_chart_style()
+
+        # Инициализация или очистка коллекций художников
+        self._initialize_artists()
     
+    def _initialize_artists(self):
+        """Инициализирует или очищает списки художников."""
+        self.candlestick_lines = None # Будет LineCollection
+        self.candlestick_bodies = []
+        self.volume_bars = []
+        self.density_zone_rects = []
+        self.orderbook_bid_rects = []
+        self.orderbook_ask_rects = []
+
+        # Удаление существующих художников с осей, если они есть
+        # Это важно, если setup_chart вызывается повторно (например, при смене темы)
+        if hasattr(self, 'price_ax') and self.price_ax:
+            # Удаляем старые коллекции и патчи, чтобы избежать дублирования
+            if self.candlestick_lines:
+                try: self.candlestick_lines.remove()
+                except Exception: pass # Игнорируем, если уже удален или не добавлен
+            for collection_list in [self.candlestick_bodies, self.density_zone_rects, self.orderbook_bid_rects, self.orderbook_ask_rects]:
+                for item in collection_list:
+                    try: item.remove()
+                    except Exception: pass
+        
+        if hasattr(self, 'volume_ax') and self.volume_ax:
+            for item in self.volume_bars:
+                try: item.remove()
+                except Exception: pass
+        
+        # Сбрасываем last_style_settings_hash, чтобы стиль применился принудительно
+        self.last_style_settings_hash = None
+
+
     def setup_chart_style(self):
         """Настройка стиля графика"""
         # Настройка цветов и стиля
@@ -490,18 +533,47 @@ class ChartManager:
                         hash(str(self.chart_settings)))
             
             if self.cached_chart_data and self.cached_chart_data['key'] == cache_key:
+                # TODO: Potentially still need to redraw if zoom/pan changed, 
+                # even if underlying data is the same. For now, assume this check is sufficient.
                 return  # Нет необходимости перерисовывать
             
-            # Очистка графика
-            self.price_ax.clear()
-            self.volume_ax.clear()
+            # Очистка старых художников вместо полной очистки осей
+            for p in self.candlestick_bodies + self.volume_bars + self.density_zone_rects + self.orderbook_bid_rects + self.orderbook_ask_rects:
+                if p.axes: # Проверяем, что патч все еще на осях
+                    p.remove()
+            self.candlestick_bodies.clear()
+            self.volume_bars.clear()
+            self.density_zone_rects.clear()
+            self.orderbook_bid_rects.clear()
+            self.orderbook_ask_rects.clear()
+
+            if self.candlestick_lines:
+                if self.candlestick_lines.axes: # Проверяем, что коллекция все еще на осях
+                    self.candlestick_lines.remove()
+                self.candlestick_lines = None # Пересоздадим в draw_candlesticks
             
-            # Очистка осей индикаторов, если они есть
+            # Очистка индикаторов (они обычно рисуются как линии, которые могут меняться)
             if hasattr(self, 'indicator_ax') and self.indicator_ax is not None:
-                self.indicator_ax.clear()
-            
-            # Применение стиля
-            self.setup_chart_style()
+                self.indicator_ax.clear() # Пока оставляем полную очистку для индикаторов
+                # TODO: Оптимизировать отрисовку индикаторов аналогично свечам/объемам
+
+            # Применение стиля (возможно, не на каждом обновлении)
+            current_style_settings = {
+                'background_color': self.chart_settings.get('background_color'),
+                'grid_alpha': self.chart_settings.get('grid_alpha'),
+                # Добавьте другие настройки стиля, если они влияют на setup_chart_style
+            }
+            current_style_hash = hash(str(current_style_settings))
+
+            if current_style_hash != self.last_style_settings_hash:
+                self.setup_chart_style() # Применяем стиль только если он изменился
+                self.last_style_settings_hash = current_style_hash
+            else:
+                # Важно: если стиль не менялся, нужно убедиться, что основные элементы стиля осей
+                # (например, цвет фона) не были сброшены индикаторной очисткой.
+                # self.price_ax.set_facecolor(...) и т.д. могут быть нужны здесь, если clear() их сбрасывает.
+                # Однако, индикаторы рисуются на indicator_ax, price_ax и volume_ax не должны страдать.
+                pass
             
             # Проверка, что фигура существует перед отрисовкой
             try:
@@ -558,17 +630,26 @@ class ChartManager:
         # self.price_ax.vlines(dates[down_indices], lows[down_indices], highs[down_indices], 
         #                    color=down_color, linewidth=1)
         
-        # Отрисовка теней свечей с использованием индивидуальных линий
+        # Отрисовка теней (фитилей) с использованием LineCollection
+        lines_data = []
+        line_colors_data = []
         for i in range(len(dates)):
+            lines_data.append([(mdates.date2num(dates[i]), lows[i]), (mdates.date2num(dates[i]), highs[i])])
             if up_indices[i]:
-                self.price_ax.plot([mdates.date2num(dates[i]), mdates.date2num(dates[i])], 
-                                 [lows[i], highs[i]], 
-                                 color=up_color, linewidth=1)
+                line_colors_data.append(up_color)
             else:
-                self.price_ax.plot([mdates.date2num(dates[i]), mdates.date2num(dates[i])], 
-                                 [lows[i], highs[i]], 
-                                 color=down_color, linewidth=1)
-        
+                line_colors_data.append(down_color)
+
+        if self.candlestick_lines is None: # Создаем, если еще не существует
+            self.candlestick_lines = LineCollection(lines_data, colors=line_colors_data, linewidths=1)
+            self.price_ax.add_collection(self.candlestick_lines)
+        else: # Обновляем существующую
+            self.candlestick_lines.set_segments(lines_data)
+            self.candlestick_lines.set_colors(line_colors_data)
+            if not self.candlestick_lines.axes: # Если коллекция была удалена, добавляем снова
+                 self.price_ax.add_collection(self.candlestick_lines)
+
+
         # Проверка, что фигура существует
         try:
             fig = self.price_ax.get_figure()
@@ -604,9 +685,10 @@ class ChartManager:
             return
         
         # Полностью отказываемся от PatchCollection, так как она вызывает ошибки с dpi
-        # Вместо этого используем индивидуальные патчи для всех свечей
+        # Вместо этого используем индивидуальные патчи для всех свечей.
+        # self.candlestick_bodies уже очищен в update_chart()
         try:
-            # Растущие свечи
+            new_bodies = []
             for i in range(len(dates)):
                 if up_indices[i]:
                     rect = Rectangle((mdates.date2num(dates[i]) - width/2, opens[i]), 
@@ -615,7 +697,6 @@ class ChartManager:
                                   facecolor=up_color, 
                                   edgecolor=up_color, 
                                   linewidth=1)
-                    self.price_ax.add_patch(rect)
                 else:  # Падающие свечи
                     rect = Rectangle((mdates.date2num(dates[i]) - width/2, closes[i]), 
                                   width, 
@@ -623,10 +704,13 @@ class ChartManager:
                                   facecolor=down_color, 
                                   edgecolor=down_color, 
                                   linewidth=1)
-                    self.price_ax.add_patch(rect)
-        except Exception:
-                    # Если не удалось установить размер, пропускаем
-                    pass
+                self.price_ax.add_patch(rect) # Добавляем сразу на оси
+                new_bodies.append(rect)
+            self.candlestick_bodies = new_bodies # Сохраняем список новых патчей
+        except Exception as e:
+            if self.on_error: self.on_error(f"Ошибка отрисовки тел свечей: {e}")
+            # Если не удалось установить размер, пропускаем
+            pass
     
     def draw_volumes(self, df):
         """Отрисовка объемов с оптимизацией производительности"""
@@ -659,27 +743,29 @@ class ChartManager:
         # Создание массивов для растущих и падающих свечей
         up_indices = closes >= opens
         down_indices = closes < opens
-        
-        # Отрисовка объемов для растущих свечей
-        if any(up_indices):
-            self.volume_ax.bar([mdates.date2num(dates[i]) for i in range(len(dates)) if up_indices[i]], 
-                             [volumes[i] for i in range(len(volumes)) if up_indices[i]], 
-                             width=width, 
-                             color=up_color, 
-                             alpha=0.5)
-        
-        # Отрисовка объемов для падающих свечей
-        if any(down_indices):
-            self.volume_ax.bar([mdates.date2num(dates[i]) for i in range(len(dates)) if down_indices[i]], 
-                             [volumes[i] for i in range(len(volumes)) if down_indices[i]], 
-                             width=width, 
-                             color=down_color, 
-                             alpha=0.5)
+
+        # self.volume_bars уже очищен в update_chart()
+        new_volume_bars = []
+        for i in range(len(dates)):
+            color = up_color if up_indices[i] else down_color
+            rect = Rectangle((mdates.date2num(dates[i]) - width/2, 0),
+                           width,
+                           volumes[i],
+                           facecolor=color, # alpha уже в цвете
+                           edgecolor=color) 
+            self.volume_ax.add_patch(rect)
+            new_volume_bars.append(rect)
+        self.volume_bars = new_volume_bars
         
         # Настройка оси объемов
-        self.volume_ax.set_ylim(0, df['volume'].max() * 3)
-        self.volume_ax.spines['right'].set_position(('axes', 1.02))
-        self.volume_ax.set_ylabel('Volume', color='#666666')
+        if not df['volume'].empty and df['volume'].max() > 0:
+            self.volume_ax.set_ylim(0, df['volume'].max() * 3)
+        else:
+            self.volume_ax.set_ylim(0, 1) # Запасной вариант для оси Y, если нет объемов
+        self.volume_ax.spines['right'].set_position(('axes', 1.02)) # Это может вызывать проблемы, если volume_ax не основной
+        self.volume_ax.set_ylabel('Volume', color='#cccccc') # Цвет как у других меток
+        # Убедимся, что ось X для объемов синхронизирована с ценовой осью
+        self.volume_ax.set_xlim(self.price_ax.get_xlim())
     
     def draw_density_zones(self):
         """Отрисовка зон плотности"""
@@ -700,8 +786,9 @@ class ChartManager:
         x_min, x_max = self.price_ax.get_xlim()
         
         # Создаем список прямоугольников для всех зон
-        rectangles = []
+        # self.density_zone_rects уже очищен в update_chart()
         
+        new_density_zones_rects = []
         for zone in self.density_zones:
             center = zone['center']
             width = zone['width']
@@ -719,20 +806,12 @@ class ChartManager:
                            facecolor=color, 
                            edgecolor=edge_color, 
                            linewidth=1, 
-                           alpha=min(0.8, strength * 2))
+                           alpha=min(0.8, strength * 2)) # Убедимся, что strength корректно влияет на alpha
             
-            rectangles.append(rect)
+            self.price_ax.add_patch(rect)
+            new_density_zones_rects.append(rect)
+        self.density_zone_rects = new_density_zones_rects
         
-        # Добавляем все прямоугольники по отдельности, избегая использования PatchCollection
-        if rectangles:
-            try:
-                # Добавляем патчи по отдельности, чтобы избежать проблем с dpi
-                for rect in rectangles:
-                    self.price_ax.add_patch(rect)
-            except Exception:
-                # Игнорируем ошибки при добавлении патчей
-                pass
-    
     def draw_orderbook(self):
         """Отрисовка стакана заявок"""
         if not self.orderbook_data or not self.orderbook_data['bids'] or not self.orderbook_data['asks']:
@@ -767,8 +846,10 @@ class ChartManager:
         width = (y_max - y_min) * 0.1
         
         # Создаем списки прямоугольников для ордеров
-        bid_rectangles = []
-        ask_rectangles = []
+        # self.orderbook_bid_rects и self.orderbook_ask_rects уже очищены в update_chart()
+
+        new_bid_rects = []
+        new_ask_rects = []
         
         # Подготовка ордеров на покупку (bids)
         if len(bids) > 0:
@@ -781,9 +862,10 @@ class ChartManager:
                                1, 
                                facecolor='#26a69a40', 
                                edgecolor='#26a69a', 
-                               linewidth=0.5, 
-                               alpha=0.5)
-                bid_rectangles.append(rect)
+                               linewidth=0.5) # alpha уже в цвете
+                self.price_ax.add_patch(rect)
+                new_bid_rects.append(rect)
+            self.orderbook_bid_rects = new_bid_rects
         
         # Подготовка ордеров на продажу (asks)
         if len(asks) > 0:
@@ -796,22 +878,10 @@ class ChartManager:
                                1, 
                                facecolor='#ef535040', 
                                edgecolor='#ef5350', 
-                               linewidth=0.5, 
-                               alpha=0.5)
-                ask_rectangles.append(rect)
-        
-        # Добавляем все прямоугольники по отдельности, избегая использования PatchCollection
-        try:
-            # Добавляем ордера на покупку по отдельности
-            for rect in bid_rectangles:
+                               linewidth=0.5) # alpha уже в цвете
                 self.price_ax.add_patch(rect)
-            
-            # Добавляем ордера на продажу по отдельности
-            for rect in ask_rectangles:
-                self.price_ax.add_patch(rect)
-        except Exception:
-            # Игнорируем ошибки при добавлении патчей
-             pass
+                new_ask_rects.append(rect)
+            self.orderbook_ask_rects = new_ask_rects
              
     def update_orderbook(self, orderbook_data):
         """Обновление данных стакана заявок"""

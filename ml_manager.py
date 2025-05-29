@@ -27,10 +27,13 @@ class MLManager:
         self.on_error = None
         self.on_log = None
     
-    def prepare_features(self, df):
-        """Подготовка признаков для модели"""
+    def prepare_features(self, df, for_prediction=False):
+        """Подготовка признаков для модели.
+        Если for_prediction is True, возвращает только последний ряд признаков (X_last).
+        Иначе, возвращает полный набор X и y для обучения.
+        """
         if df is None or len(df) < 30:
-            return None, None
+            return None if for_prediction else (None, None)
         
         try:
             # Создание копии данных
@@ -105,14 +108,19 @@ class MLManager:
                       'volatility']
             
             X = data[features].values
-            y = data['target'].values
             
+            if for_prediction:
+                if len(X) == 0:
+                    return None
+                return X[-1:] # Возвращаем только последний ряд признаков для предсказания
+            
+            y = data['target'].values
             return X, y
             
         except Exception as e:
             if self.on_error:
                 self.on_error(f"Ошибка подготовки признаков: {e}")
-            return None, None
+            return None if for_prediction else (None, None)
     
     def train_model(self, df):
         """Обучение ML-модели"""
@@ -171,32 +179,34 @@ class MLManager:
         finally:
             self.is_training = False
     
-    def predict(self, df):
-        """Прогнозирование сигналов торговли"""
-        if self.model is None or df is None or len(df) < 30:
+    def predict(self, features_last_row, current_timestamp=None, current_price=None):
+        """Прогнозирование сигналов торговли на основе уже подготовленной последней строки признаков."""
+        if self.model is None:
+            if self.on_log: self.on_log("Модель не обучена, предсказание невозможно.", "WARNING")
+            return None
+        if features_last_row is None:
+            if self.on_log: self.on_log("Нет признаков для предсказания.", "WARNING")
             return None
         
+        # Ensure features_last_row is 2D for scaler and model
+        if features_last_row.ndim == 1:
+            features_last_row = features_last_row.reshape(1, -1)
+        
         try:
-            X, _ = self.prepare_features(df)
-            
-            if X is None or len(X) < 1:
-                return None
-            
-            # Использование последней строки для прогноза
-            X_last = X[-1:]
-            X_last_scaled = self.scaler.transform(X_last)
+            X_last_scaled = self.scaler.transform(features_last_row)
             
             # Прогнозирование
             prediction = self.model.predict(X_last_scaled)[0]
             probability = self.model.predict_proba(X_last_scaled)[0]
             
             # Сохранение предсказания в истории
-            self.predictions_history.append({
-                'timestamp': df.index[-1],
-                'prediction': prediction,
-                'probability': probability.max(),
-                'price': df['close'].iloc[-1]
-            })
+            if current_timestamp and current_price:
+                self.predictions_history.append({
+                    'timestamp': current_timestamp,
+                    'prediction': prediction,
+                    'probability': probability.max(),
+                    'price': current_price
+                })
             
             return {
                 'signal': 'BUY' if prediction == 1 else 'SELL',
