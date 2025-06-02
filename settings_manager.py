@@ -47,6 +47,8 @@ class SettingsManager:
                 'show_density_zones': True,
                 'show_signals': True,
                 'candlestick_style': 'classic',  # classic или hollow
+                'chart_type': 'candlestick', # Ensure this was meant to be here from previous steps
+                'show_intracandle_profile': False, # New setting
                 'theme_colors': {
                     'background': '#1c1c1c',
                     'text': '#e0e0e0',

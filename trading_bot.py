@@ -93,6 +93,16 @@ class TradingBot:
         self.create_main_frames()
         
         # Инициализация модулей с передачей необходимых параметров
+        self.chart_type_display_map = {
+            "Candlestick": "candlestick", 
+            "Line Chart": "line",
+            "OHLC Chart": "ohlc",
+            "Heikin Ashi Chart": "heikin_ashi"
+        }
+        self.chart_type_internal_map = {v: k for k, v in self.chart_type_display_map.items()}
+        self.chart_type_var = tk.StringVar()
+        self.show_profile_var = tk.BooleanVar() # For the new Checkbutton
+
         self.data_manager = DataManager(
             symbol=self.settings['trading']['symbol'],
             interval=self.settings['trading']['interval']
@@ -100,7 +110,8 @@ class TradingBot:
         
         self.chart_manager = ChartManager(
             master=self.root,
-            chart_frame=self.chart_frame
+            chart_frame=self.chart_frame,
+            data_manager=self.data_manager # Pass DataManager instance
         )
         
         self.ml_manager = MLManager()
@@ -2239,6 +2250,16 @@ class TradingBot:
                                              variable=self.auto_trading_var,
                                              command=self.toggle_auto_trading)
         self.auto_trading_cb.pack(side=tk.LEFT, padx=5)
+
+        # Выбор типа графика
+        chart_type_frame = ttk.Frame(top_frame)
+        chart_type_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(chart_type_frame, text="Тип графика:").pack(side=tk.LEFT, padx=5)
+        self.chart_type_combo = ttk.Combobox(chart_type_frame, textvariable=self.chart_type_var,
+                                             values=list(self.chart_type_display_map.keys()), # This will now include new types
+                                             state='readonly', width=15)
+        self.chart_type_combo.pack(side=tk.LEFT, padx=5)
+        self.chart_type_combo.bind('<<ComboboxSelected>>', self.on_chart_type_change)
     
     def create_position_panel(self):
         """Создание панели с информацией о позиции"""
@@ -2300,7 +2321,23 @@ class TradingBot:
                                         variable=self.show_density_var,
                                         command=self.update_chart_settings)
         show_density_cb.pack(anchor=tk.W, padx=5)
+
+        # Checkbox for intra-candle volume profile
+        self.show_profile_cb = ttk.Checkbutton(chart_settings_frame, text="Профиль объема в свече",
+                                              variable=self.show_profile_var,
+                                              command=self.toggle_volume_profile_visibility)
+        self.show_profile_cb.pack(anchor=tk.W, padx=5)
     
+    def toggle_volume_profile_visibility(self):
+        """Переключение видимости профиля объема внутри свечи."""
+        is_enabled = self.show_profile_var.get()
+        if 'chart' not in self.settings: # Should exist due to SettingsManager defaults
+            self.settings['chart'] = {}
+        self.settings['chart']['show_intracandle_profile'] = is_enabled
+        
+        self.settings_manager.update_settings('chart', {'show_intracandle_profile': is_enabled})
+        # Chart update is handled by the callback chain triggered by settings_manager.update_settings
+
     def create_log_panel(self):
         """Создание панели с логами"""
         log_frame = ttk.LabelFrame(self.control_frame, text="Логи")
@@ -2456,7 +2493,34 @@ class TradingBot:
         # Обновление графика
         self.chart_manager.update_settings(self.settings['chart'])
         self.chart_manager.update_chart()
+
+        # Установка значения для Combobox типа графика
+        chart_type_setting = self.settings.get('chart', {}).get('chart_type', 'candlestick')
+        display_chart_type = self.chart_type_internal_map.get(chart_type_setting, "Candlestick")
+        self.chart_type_var.set(display_chart_type)
+
+        # Установка значения для чекбокса профиля объема
+        profile_enabled = self.settings.get('chart', {}).get('show_intracandle_profile', False)
+        self.show_profile_var.set(profile_enabled)
     
+    def on_chart_type_change(self, event=None):
+        """Обработчик изменения типа графика"""
+        selected_display_name = self.chart_type_var.get()
+        internal_key = self.chart_type_display_map.get(selected_display_name)
+
+        if internal_key and internal_key != self.settings['chart'].get('chart_type'):
+            self.settings['chart']['chart_type'] = internal_key
+            
+            # Используем settings_manager для обновления и сохранения категории 'chart'
+            self.settings_manager.update_settings('chart', {'chart_type': internal_key})
+            
+            # ChartManager будет обновлен через колбэк on_settings_updated,
+            # который вызывает self.chart_manager.update_settings() и self.chart_manager.update_chart()
+            # Однако, для немедленного эффекта, можно вызвать здесь напрямую, если on_settings_updated не делает update_chart.
+            # self.chart_manager.update_settings(self.settings['chart']) # Уже будет вызвано через on_settings_updated
+            # self.chart_manager.update_chart() # Также должно быть частью on_settings_updated -> chart_manager.update_settings
+            self.log_message(f"Тип графика изменен на: {selected_display_name}", "INFO")
+
     def show_help(self):
         """Показать справку"""
         help_text = """

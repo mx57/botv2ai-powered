@@ -31,7 +31,33 @@ class DataManager:
         self.on_orderbook_updated = None
         self.on_error = None
         self.on_log = None
+
+        self.profile_cache = {} # Cache for intra-candle volume profiles
     
+    def _interval_to_milliseconds(self, interval_str):
+        """Конвертирует строку интервала (например, '1m', '1h', '1d') в миллисекунды."""
+        multipliers = {
+            'm': 60 * 1000,
+            'h': 60 * 60 * 1000,
+            'd': 24 * 60 * 60 * 1000,
+            'w': 7 * 24 * 60 * 60 * 1000,
+            # Месяц ('M') обрабатывается отдельно из-за переменной длительности,
+            # но для API Binance обычно не используется в таком контексте для startTime/endTime дельт.
+            # Для простоты, если понадобится 'M', можно будет доработать или использовать для грубых оценок.
+        }
+        
+        try:
+            unit = interval_str[-1]
+            value = int(interval_str[:-1])
+            if unit in multipliers:
+                return value * multipliers[unit]
+            else: # Предполагаем, что это секунды, если нет суффикса, или неизвестный суффикс
+                return int(interval_str) * 1000 
+        except ValueError: # Если не удалось преобразовать числовую часть
+            if self.on_error:
+                self.on_error(f"Не удалось распознать интервал: {interval_str}")
+            return None # Или значение по умолчанию, например, для 1 минуты
+
     def set_symbol_interval(self, symbol, interval):
         """Установка символа и интервала"""
         if symbol != self.symbol or interval != self.interval:
@@ -280,3 +306,133 @@ class DataManager:
         if self.ws:
             self.ws.close()
             self.ws = None
+
+    def _fetch_klines_by_range(self, symbol, interval, startTime_ms, endTime_ms, limit=1000):
+        """Внутренний метод для загрузки свечей за определенный период."""
+        try:
+            url = "https://api.binance.com/api/v3/klines"
+            params = {
+                'symbol': symbol,
+                'interval': interval,
+                'startTime': startTime_ms,
+                'endTime': endTime_ms, # Binance endTime is inclusive
+                'limit': limit
+            }
+            
+            response = requests.get(url, params=params, timeout=10) # 10 секунд таймаут
+            response.raise_for_status() # Вызовет исключение для HTTP ошибок 4xx/5xx
+            data = response.json()
+            
+            if not data:
+                return pd.DataFrame() # Возвращаем пустой DataFrame, если нет данных
+
+            df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume',
+                                           'close_time', 'quote_asset_volume', 'number_of_trades',
+                                           'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+            
+            numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+            df[numeric_columns] = df[numeric_columns].astype(float)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            # df.set_index('timestamp', inplace=True) # Индекс не нужен для этой функции, вернем с timestamp колонкой
+            return df
+            
+        except requests.exceptions.RequestException as e:
+            if self.on_error:
+                self.on_error(f"Ошибка сети при загрузке свечей для профиля: {e}")
+            return pd.DataFrame()
+        except Exception as e:
+            if self.on_error:
+                self.on_error(f"Ошибка обработки данных свечей для профиля: {e}")
+            return pd.DataFrame()
+
+    def get_intra_candle_volume_profile(self, symbol, main_candle_timestamp, main_candle_interval, 
+                                        main_candle_high, main_candle_low, 
+                                        profile_granularity_interval='1m', num_price_bins=20):
+        """
+        Получает и рассчитывает профиль объема внутри указанной основной свечи.
+        main_candle_timestamp: Время начала основной свечи (в миллисекундах).
+        """
+        cache_key = (symbol, main_candle_timestamp, main_candle_interval, 
+                     main_candle_high, main_candle_low, 
+                     profile_granularity_interval, num_price_bins)
+        
+        if cache_key in self.profile_cache:
+            if self.on_log:
+                self.on_log(f"Профиль для {symbol} @ {main_candle_timestamp} из кэша.", "DEBUG")
+            return self.profile_cache[cache_key]
+
+        if self.on_log:
+            self.on_log(f"Расчет профиля для {symbol} @ {main_candle_timestamp} ({main_candle_interval}). Гранулярность: {profile_granularity_interval}", "INFO")
+
+        main_candle_duration_ms = self._interval_to_milliseconds(main_candle_interval)
+        if main_candle_duration_ms is None:
+            return [] # Ошибка конвертации интервала
+
+        # Binance endTime для klines является инклюзивным.
+        # startTime также инклюзивный.
+        main_candle_end_ms = main_candle_timestamp + main_candle_duration_ms - 1 
+
+        finer_klines_df = self._fetch_klines_by_range(symbol, profile_granularity_interval, 
+                                                      main_candle_timestamp, main_candle_end_ms)
+
+        if finer_klines_df is None or finer_klines_df.empty:
+            if self.on_log:
+                 self.on_log(f"Нет данных гранулярности {profile_granularity_interval} для {symbol} в диапазоне {main_candle_timestamp} - {main_candle_end_ms}", "WARNING")
+            return []
+
+        profile_bins = []
+        if main_candle_high == main_candle_low: # Плоская свеча
+            # Создаем один бин, охватывающий эту цену
+            profile_bins.append({
+                'price_level_start': main_candle_low,
+                'price_level_end': main_candle_high,
+                'total_volume': finer_klines_df['volume'].sum(),
+                'buy_volume': finer_klines_df[finer_klines_df['close'] >= finer_klines_df['open']]['volume'].sum(),
+                'sell_volume': finer_klines_df[finer_klines_df['close'] < finer_klines_df['open']]['volume'].sum(),
+            })
+        elif num_price_bins > 0 :
+            bin_size = (main_candle_high - main_candle_low) / num_price_bins
+            for i in range(num_price_bins):
+                level_start = main_candle_low + (i * bin_size)
+                level_end = main_candle_low + ((i + 1) * bin_size)
+                # Для последнего бина убедимся, что он включает main_candle_high
+                if i == num_price_bins - 1:
+                    level_end = main_candle_high 
+                profile_bins.append({
+                    'price_level_start': level_start,
+                    'price_level_end': level_end,
+                    'total_volume': 0.0,
+                    'buy_volume': 0.0,
+                    'sell_volume': 0.0,
+                })
+            
+            for _, row in finer_klines_df.iterrows():
+                typical_price = (row['open'] + row['high'] + row['low'] + row['close']) / 4
+                volume = row['volume']
+
+                # Определяем, в какой бин попадает цена
+                # Убедимся, что typical_price не выходит за пределы основного диапазона свечи
+                # (хотя по логике не должен, если finer_klines в этом диапазоне)
+                clamped_price = max(main_candle_low, min(typical_price, main_candle_high))
+
+                if bin_size == 0: # Если все еще 0 после проверки main_candle_high == main_candle_low (маловероятно)
+                     bin_index = 0 if num_price_bins == 1 else -1
+                else:
+                    bin_index = int((clamped_price - main_candle_low) / bin_size)
+                
+                # Коррекция для верхней границы: если цена равна main_candle_high, она должна попасть в последний бин
+                if bin_index >= num_price_bins:
+                    bin_index = num_price_bins - 1
+                
+                if 0 <= bin_index < num_price_bins:
+                    profile_bins[bin_index]['total_volume'] += volume
+                    if row['close'] >= row['open']: # Считаем как "buy" объем, если свеча зеленая/доджи
+                        profile_bins[bin_index]['buy_volume'] += volume
+                    else: # Считаем как "sell" объем, если свеча красная
+                        profile_bins[bin_index]['sell_volume'] += volume
+                # else: # На случай, если цена выходит за пределы (не должно случаться при правильном clamping)
+                #     if self.on_log:
+                #         self.on_log(f"Цена {typical_price} вышла за пределы бинов для {symbol}", "WARNING")
+        
+        self.profile_cache[cache_key] = profile_bins
+        return profile_bins

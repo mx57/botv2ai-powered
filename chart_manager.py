@@ -13,9 +13,10 @@ from datetime import datetime, timedelta
 class ChartManager:
     """Модуль для управления графиками торгового бота"""
     
-    def __init__(self, master, chart_frame):
+    def __init__(self, master, chart_frame, data_manager): # Added data_manager
         self.master = master
         self.chart_frame = chart_frame
+        self.data_manager = data_manager # Store DataManager instance
         
         # Настройки графика
         self.fig = None
@@ -40,7 +41,9 @@ class ChartManager:
         self.zoom_level = 100
         self.offset = 0
         self.dragging = False
-        self.last_x = 0
+        self.last_x = 0 # Retained for now, though pan logic might change its use
+        self.pan_start_x_screen = 0 
+        self.pan_initial_offset = 0
         
         # Колбэки для событий
         self.on_error = None
@@ -82,7 +85,9 @@ class ChartManager:
                     'macd_signal': 9
                 },
                 'background_color': '#121212',
-                'grid_alpha': 0.2
+                'grid_alpha': 0.2,
+                'chart_type': 'candlestick',  # Default chart type
+                'show_intracandle_profile': False # Setting for volume profile
             }
     
     def setup_chart(self):
@@ -245,22 +250,52 @@ class ChartManager:
     
     def on_key_press(self, event):
         """Обработка нажатия клавиш"""
+        if self.df is None or len(self.df) == 0:
+            return
+
         if event.key == 'left':
-            # Сдвиг влево
-            self.offset = min(len(self.df) - self.zoom_level, self.offset + 10)
+            # Сдвиг влево (старые данные)
+            pan_amount = int(self.zoom_level * 0.1)  # Панорамирование на 10% от видимой области
+            self.offset = min(len(self.df) - self.zoom_level, self.offset + pan_amount)
             self.update_chart()
         elif event.key == 'right':
-            # Сдвиг вправо
-            self.offset = max(0, self.offset - 10)
+            # Сдвиг вправо (новые данные)
+            pan_amount = int(self.zoom_level * 0.1)  # Панорамирование на 10% от видимой области
+            self.offset = max(0, self.offset - pan_amount)
             self.update_chart()
         elif event.key == 'up':
-            # Увеличение масштаба
-            self.zoom_level = max(10, self.zoom_level - 10)
+            # Увеличение масштаба (zoom in)
+            old_zoom_level = self.zoom_level
+            zoom_factor = 0.1  # Увеличение на 10%
+            new_zoom_level = old_zoom_level * (1 - zoom_factor)
+            new_zoom_level = int(max(10, min(new_zoom_level, len(self.df))))
+
+            delta_zoom = new_zoom_level - old_zoom_level
+            
+            # Коррекция offset для центрирования зума
+            self.offset -= delta_zoom / 2.0
+            self.zoom_level = new_zoom_level
+            self.offset = int(max(0, min(self.offset, len(self.df) - self.zoom_level)))
             self.update_chart()
         elif event.key == 'down':
-            # Уменьшение масштаба
-            self.zoom_level = min(500, self.zoom_level + 10)
+            # Уменьшение масштаба (zoom out)
+            old_zoom_level = self.zoom_level
+            zoom_factor = 0.1  # Уменьшение на 10%
+            new_zoom_level = old_zoom_level * (1 + zoom_factor)
+            new_zoom_level = int(max(10, min(new_zoom_level, len(self.df))))
+
+            delta_zoom = new_zoom_level - old_zoom_level
+
+            # Коррекция offset для центрирования зума
+            self.offset -= delta_zoom / 2.0
+            self.zoom_level = new_zoom_level
+            self.offset = int(max(0, min(self.offset, len(self.df) - self.zoom_level)))
             self.update_chart()
+        elif event.key == 'r': # Reset view
+            if self.df is not None and len(self.df) > 0:
+                self.zoom_level = len(self.df) # Show all data
+                self.offset = 0 # Align to the most recent data
+                self.update_chart()
     
     def on_resize(self, event):
         """Обработка изменения размера окна"""
@@ -275,41 +310,99 @@ class ChartManager:
         self.fig.canvas.mpl_connect('motion_notify_event', self.on_motion)
     
     def on_scroll(self, event):
-        """Обработка прокрутки для масштабирования"""
-        if event.inaxes != self.price_ax:
+        """Обработка прокрутки для масштабирования с центром на курсоре мыши."""
+        if event.inaxes != self.price_ax or self.df is None or len(self.df) == 0 or event.xdata is None:
             return
+
+        # Получение текущей позиции курсора относительно оси X (в пикселях)
+        x_cursor_pixel = event.x
+        try:
+            ax_bbox = self.price_ax.get_window_extent() # Получаем bbox в экранных координатах
+            ax_x_abs_pixel = ax_bbox.x0
+            ax_width_abs_pixel = ax_bbox.width
+        except AttributeError:
+             # Может возникнуть, если график еще не полностью отрисован
+            return
+
+        if ax_width_abs_pixel == 0: # Предотвращение деления на ноль
+            return
+            
+        cursor_ratio = (x_cursor_pixel - ax_x_abs_pixel) / ax_width_abs_pixel
+        cursor_ratio = max(0.0, min(1.0, cursor_ratio)) # Ограничение от 0 до 1
+
+        old_zoom_level = float(self.zoom_level)
+        zoom_factor = 0.1  # Масштабирование на 10%
+
+        if event.button == 'up':  # Zoom In
+            new_zoom_level = old_zoom_level * (1 - zoom_factor)
+        else:  # Zoom Out
+            new_zoom_level = old_zoom_level * (1 + zoom_factor)
         
-        # Изменение уровня масштабирования
-        if event.button == 'up':
-            self.zoom_level = max(10, self.zoom_level - 5)
-        else:
-            self.zoom_level = min(500, self.zoom_level + 5)
+        new_zoom_level = int(max(10, min(new_zoom_level, len(self.df))))
+
+        if new_zoom_level == int(old_zoom_level): # Если масштаб не изменился значительно
+            return
+
+        delta_zoom = new_zoom_level - old_zoom_level
+        
+        # Коррекция offset для центрирования зума на курсоре
+        # offset - количество точек справа от видимой области
+        # Увеличение offset сдвигает график влево (показывает более старые данные)
+        # Уменьшение offset сдвигает график вправо (показывает более новые данные)
+        self.offset -= delta_zoom * (1 - cursor_ratio)
+        
+        self.zoom_level = new_zoom_level
+        self.offset = int(max(0, min(self.offset, len(self.df) - self.zoom_level)))
         
         # Обновление графика
         self.master.after_idle(self.update_chart)
     
     def on_press(self, event):
         """Обработка нажатия кнопки мыши"""
-        if event.inaxes != self.price_ax:
+        if event.inaxes != self.price_ax or event.x is None:
             return
         
         self.dragging = True
-        self.last_x = event.xdata
+        self.pan_start_x_screen = event.x  # Store screen x-coordinate for panning
+        self.pan_initial_offset = self.offset # Store initial offset for panning calculation
+        # self.last_x = event.xdata # This was for data-coordinate based panning, may remove if not used elsewhere
     
     def on_release(self, event):
         """Обработка отпускания кнопки мыши"""
         self.dragging = False
     
     def on_motion(self, event):
-        """Обработка перемещения мыши"""
-        if not self.dragging or event.inaxes != self.price_ax or event.xdata is None:
+        """Обработка перемещения мыши для панорамирования."""
+        if not self.dragging or event.inaxes != self.price_ax or event.x is None or self.df is None or len(self.df) == 0:
             return
         
-        # Расчет смещения
-        dx = event.xdata - self.last_x
-        self.offset += int(dx * 5)
-        self.offset = max(0, min(self.offset, len(self.df) - self.zoom_level))
-        self.last_x = event.xdata
+        try:
+            ax_bbox = self.price_ax.get_window_extent()
+            ax_width_pixels = ax_bbox.width
+        except AttributeError:
+             # Может возникнуть, если график еще не полностью отрисован
+            return
+
+        if ax_width_pixels == 0: # Предотвращение деления на ноль
+            return
+
+        current_x_screen = event.x
+        # Delta in screen pixels from the start of the drag operation
+        dx_screen = current_x_screen - self.pan_start_x_screen 
+        
+        # Calculate pan amount in data points
+        # pan_ratio is the fraction of the axis width the mouse has been dragged
+        pan_ratio = dx_screen / ax_width_pixels
+        
+        # data_pan_amount is how many data points this screen drag corresponds to
+        data_pan_amount = int(pan_ratio * self.zoom_level)
+        
+        # A positive dx_screen (drag right) means the view should show newer data.
+        # Newer data means a smaller offset (since offset is from the right end of the dataset).
+        # So, new_offset = initial_offset - data_pan_amount
+        new_offset = self.pan_initial_offset - data_pan_amount
+        
+        self.offset = int(max(0, min(new_offset, len(self.df) - self.zoom_level)))
         
         # Обновление графика
         self.master.after_idle(self.update_chart)
@@ -376,11 +469,68 @@ class ChartManager:
             
             visible_df = self.df.iloc[start_idx:end_idx]
             
-            # Отрисовка свечей
-            self.draw_candlesticks(visible_df)
-            
+            # Отрисовка основного графика (свечи или линия)
+            chart_type = self.chart_settings.get('chart_type', 'candlestick')
+            if chart_type == 'candlestick':
+                self.draw_candlesticks(visible_df)
+            elif chart_type == 'line':
+                self.draw_line_chart(visible_df)
+            elif chart_type == 'ohlc': 
+                self.draw_ohlc_chart(visible_df)
+            elif chart_type == 'heikin_ashi': 
+                self.draw_heikin_ashi_chart(visible_df)
+            else: 
+                self.draw_candlesticks(visible_df)
+
+            # Отрисовка профиля объема внутри свечи, если включено
+            if self.chart_settings.get('show_intracandle_profile', False) and not visible_df.empty:
+                dates_num_vis = mdates.date2num(visible_df.index.to_pydatetime())
+                candle_width_num = 0.01 
+                if len(dates_num_vis) > 1:
+                    candle_width_num = (dates_num_vis[1] - dates_num_vis[0]) * 0.8 
+                elif len(dates_num_vis) == 1 and hasattr(self.df, 'index') and len(self.df.index) > 1: 
+                    full_dates_num = mdates.date2num(self.df.index.to_pydatetime())
+                    try: 
+                        idx_in_full = self.df.index.get_loc(visible_df.index[0])
+                        if idx_in_full > 0:
+                            candle_width_num = (full_dates_num[idx_in_full] - full_dates_num[idx_in_full-1]) * 0.8
+                        elif idx_in_full < len(full_dates_num) - 1:
+                            candle_width_num = (full_dates_num[idx_in_full+1] - full_dates_num[idx_in_full]) * 0.8
+                    except KeyError: 
+                        pass 
+                
+                symbol = "BTCUSDT" 
+                main_interval = "1h" 
+                if hasattr(self.master, 'settings_manager') and self.master.settings_manager.settings:
+                    trading_settings = self.master.settings_manager.settings.get('trading', {})
+                    symbol = trading_settings.get('symbol', symbol)
+                    main_interval = trading_settings.get('interval', main_interval)
+
+                for i in range(len(visible_df)):
+                    candle_row = visible_df.iloc[i]
+                    candle_x_center_num = dates_num_vis[i]
+                    main_candle_timestamp_ms = int(candle_row.name.timestamp() * 1000)
+                    
+                    # Use self.data_manager directly now
+                    profile_data = self.data_manager.get_intra_candle_volume_profile(
+                        symbol=symbol,
+                        main_candle_timestamp=main_candle_timestamp_ms,
+                        main_candle_interval=main_interval,
+                        main_candle_high=candle_row['high'],
+                        main_candle_low=candle_row['low']
+                    )
+                    if profile_data:
+                        self._draw_single_candle_volume_profile(
+                            self.price_ax, 
+                            candle_x_center_num, 
+                            candle_row, 
+                            profile_data, 
+                            candle_width_num
+                        )
+
             # Отрисовка объема
-            if self.chart_settings.get('show_volume', True):
+            # Standardizing to 'show_volume' as it is used in the original part of this block and in SettingsManager.
+            if self.chart_settings.get('show_volume', self.chart_settings.get('show_volumes', True)):
                 self.draw_volumes(visible_df)
             
             # Отрисовка индикаторов
@@ -627,7 +777,202 @@ class ChartManager:
         except Exception:
                     # Если не удалось установить размер, пропускаем
                     pass
-    
+
+    def draw_line_chart(self, df):
+        """Отрисовка линейного графика (цена закрытия)"""
+        if not hasattr(self, 'price_ax') or self.price_ax is None:
+            return
+        
+        # Проверка наличия данных
+        if df is None or df.empty or 'close' not in df.columns:
+            if self.on_log:
+                self.on_log("Данные для линейного графика отсутствуют или не содержат столбец 'close'", "WARNING")
+            return
+
+        try:
+            self.price_ax.plot(df.index, df['close'], color='#4287f5', linewidth=1.2, label='Close Price')
+            # Легенда будет обработана в draw_indicators, если включена
+        except Exception as e:
+            if self.on_error:
+                self.on_error(f"Ошибка при отрисовке линейного графика: {e}")
+
+    def _draw_single_candle_volume_profile(self, ax, candle_x_center_num, candle_data_row, profile_data, candle_width_num):
+        """Отрисовка профиля объема для одной свечи."""
+        if not profile_data:
+            return
+
+        max_profile_volume = max(p['total_volume'] for p in profile_data)
+        if max_profile_volume == 0:
+            return
+
+        PROFILE_MAX_SCREEN_WIDTH_RATIO = 0.4  # Профиль занимает до 40% ширины основной свечи
+        PROFILE_BAR_COLOR_TOTAL = '#8080D0'  # Синеватый для общего объема
+        PROFILE_BAR_COLOR_BUY = '#60B060'   # Зеленоватый для объема покупок
+        PROFILE_BAR_COLOR_SELL = '#D06060'  # Красноватый для объема продаж
+        PROFILE_ALPHA = 0.65
+
+        # Начальная X позиция для баров профиля (справа от свечи)
+        profile_x_start = candle_x_center_num + candle_width_num * 0.55 # Небольшой отступ от свечи
+
+        # Максимальная длина бара профиля в числовых координатах оси X
+        max_bar_length_data_units = candle_width_num * PROFILE_MAX_SCREEN_WIDTH_RATIO
+        
+        # Определяем, есть ли данные о buy/sell объемах
+        has_buy_sell_volume = all('buy_volume' in p and 'sell_volume' in p for p in profile_data)
+
+
+        for bin_data in profile_data:
+            price_start = bin_data['price_level_start']
+            price_end = bin_data['price_level_end']
+            total_volume = bin_data['total_volume']
+            
+            bar_y_position = (price_start + price_end) / 2
+            bar_height_price_units = price_end - price_start
+            
+            if total_volume == 0 : continue # Пропускаем бины без объема
+
+            # Длина бара пропорциональна объему
+            bar_length_data_units = (total_volume / max_profile_volume) * max_bar_length_data_units
+
+            if has_buy_sell_volume and total_volume > 0:
+                buy_volume = bin_data.get('buy_volume', 0)
+                sell_volume = bin_data.get('sell_volume', 0)
+
+                buy_bar_length = (buy_volume / total_volume) * bar_length_data_units
+                sell_bar_length = (sell_volume / total_volume) * bar_length_data_units
+                
+                # Рисуем объем продаж слева (или первым)
+                if sell_volume > 0:
+                    ax.barh(y=bar_y_position, width=sell_bar_length, height=bar_height_price_units,
+                            left=profile_x_start, color=PROFILE_BAR_COLOR_SELL,
+                            alpha=PROFILE_ALPHA, edgecolor=None, align='center')
+                
+                # Рисуем объем покупок справа (или вторым, поверх/рядом с продажами)
+                if buy_volume > 0:
+                    ax.barh(y=bar_y_position, width=buy_bar_length, height=bar_height_price_units,
+                            left=profile_x_start + (sell_bar_length if sell_volume > 0 else 0) , color=PROFILE_BAR_COLOR_BUY,
+                            alpha=PROFILE_ALPHA, edgecolor=None, align='center')
+            else: # Рисуем только total_volume, если нет разделения
+                 ax.barh(y=bar_y_position, width=bar_length_data_units, height=bar_height_price_units,
+                        left=profile_x_start, color=PROFILE_BAR_COLOR_TOTAL,
+                        alpha=PROFILE_ALPHA, edgecolor=None, align='center')
+
+
+    def _calculate_heikin_ashi_df(self, df_orig):
+        """Расчет данных для графика Heikin Ashi."""
+        if df_orig is None or df_orig.empty:
+            return pd.DataFrame()
+
+        df = df_orig.copy()
+        ha_df = pd.DataFrame(index=df.index)
+
+        ha_df['HA_Close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+
+        ha_df['HA_Open'] = np.nan
+        if len(df) > 0:
+            ha_df.loc[df.index[0], 'HA_Open'] = (df['open'].iloc[0] + df['close'].iloc[0]) / 2
+            for i in range(1, len(df)):
+                ha_df.loc[df.index[i], 'HA_Open'] = \
+                    (ha_df['HA_Open'].iloc[i-1] + ha_df['HA_Close'].iloc[i-1]) / 2
+        
+        ha_df['HA_High'] = ha_df[['HA_Open', 'HA_Close']].join(df['high']).max(axis=1)
+        ha_df['HA_Low'] = ha_df[['HA_Open', 'HA_Close']].join(df['low']).min(axis=1)
+        
+        # Для использования в методах отрисовки свечей, переименуем колонки в стандартные
+        # но это лучше делать непосредственно перед вызовом draw_candlesticks_internal
+        # или передавать имена колонок в тот метод. Пока оставим как есть.
+        return ha_df
+
+    def draw_heikin_ashi_chart(self, df):
+        """Отрисовка графика Heikin Ashi."""
+        if df is None or df.empty:
+            return
+        
+        ha_df = self._calculate_heikin_ashi_df(df)
+        if ha_df.empty:
+            return
+
+        # Используем существующий метод draw_candlesticks, но с данными Heikin Ashi
+        # Для этого нужно временно подменить df['open'], df['high'], etc. или модифицировать draw_candlesticks
+        # Проще создать копию DataFrame с нужными именами колонок
+        # Цвета для Heikin Ashi свечей: зеленый если HA_Close > HA_Open, красный если HA_Close < HA_Open
+        
+        # Цвета для свечей
+        up_color = '#26a69a'
+        down_color = '#ef5350'
+
+        dates_num = mdates.date2num(ha_df.index.to_pydatetime())
+
+        # Ширина свечи
+        if len(dates_num) > 1:
+            width = 0.6 * (dates_num[1] - dates_num[0])
+        else:
+            # Если данных мало, используем значение по умолчанию, адаптированное под mdates
+            # Это значение соответствует примерно 0.01 "дням" в числовом представлении mdates
+            width = 0.6 * (0.01) 
+
+
+        for i in range(len(ha_df)):
+            ha_open = ha_df['HA_Open'].iloc[i]
+            ha_close = ha_df['HA_Close'].iloc[i]
+            ha_high = ha_df['HA_High'].iloc[i]
+            ha_low = ha_df['HA_Low'].iloc[i]
+            
+            color = up_color if ha_close >= ha_open else down_color
+            
+            # Тени
+            self.price_ax.plot([dates_num[i], dates_num[i]], [ha_low, ha_high], color=color, linewidth=1)
+            
+            # Тела
+            body_bottom = min(ha_open, ha_close)
+            body_height = abs(ha_open - ha_close)
+            
+            if body_height == 0: # Для Doji свечей, где Open == Close
+                body_height = 0.01 * ha_close # Минимальная высота для видимости
+                body_bottom = ha_close - body_height / 2
+
+
+            rect = Rectangle((dates_num[i] - width/2, body_bottom), width, body_height,
+                             facecolor=color, edgecolor=color, linewidth=1)
+            self.price_ax.add_patch(rect)
+            
+    def draw_ohlc_chart(self, df):
+        """Отрисовка графика OHLC."""
+        if df is None or df.empty:
+            return
+
+        up_color = '#26a69a'
+        down_color = '#ef5350'
+
+        dates_num = mdates.date2num(df.index.to_pydatetime())
+        
+        # Ширина тиков для Open/Close
+        # Адаптируем tick_width к масштабу оси X
+        if len(dates_num) > 1:
+            # tick_width как 10% от ширины одной "свечи"
+            tick_width_data_units = 0.1 * (dates_num[1] - dates_num[0]) 
+        else:
+            # Если данных мало, используем небольшое фиксированное значение
+            # Это значение должно быть достаточно малым, чтобы не перекрывать соседние элементы
+            tick_width_data_units = 0.002 # Примерное значение для mdates
+
+        for i in range(len(df)):
+            o = df['open'].iloc[i]
+            h = df['high'].iloc[i]
+            l = df['low'].iloc[i]
+            c = df['close'].iloc[i]
+            
+            color = up_color if c >= o else down_color
+            
+            # Вертикальная линия High-Low
+            self.price_ax.plot([dates_num[i], dates_num[i]], [l, h], color=color, linewidth=1)
+            
+            # Тик Open (влево)
+            self.price_ax.plot([dates_num[i] - tick_width_data_units, dates_num[i]], [o, o], color=color, linewidth=1)
+            
+            # Тик Close (вправо)
+            self.price_ax.plot([dates_num[i], dates_num[i] + tick_width_data_units], [c, c], color=color, linewidth=1)
+
     def draw_volumes(self, df):
         """Отрисовка объемов с оптимизацией производительности"""
         # Цвета для объемов
