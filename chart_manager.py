@@ -39,7 +39,7 @@ class ChartManager:
         self.density_zone_rects = []
         self.orderbook_bid_rects = []
         self.orderbook_ask_rects = []
-        
+
         self.last_style_settings_hash = None # Для отслеживания изменений стиля
         
         # Оптимизация производительности
@@ -182,12 +182,12 @@ class ChartManager:
                 for item in collection_list:
                     try: item.remove()
                     except Exception: pass
-        
+
         if hasattr(self, 'volume_ax') and self.volume_ax:
             for item in self.volume_bars:
                 try: item.remove()
                 except Exception: pass
-        
+
         # Сбрасываем last_style_settings_hash, чтобы стиль применился принудительно
         self.last_style_settings_hash = None
 
@@ -533,7 +533,7 @@ class ChartManager:
                         hash(str(self.chart_settings)))
             
             if self.cached_chart_data and self.cached_chart_data['key'] == cache_key:
-                # TODO: Potentially still need to redraw if zoom/pan changed, 
+                # TODO: Potentially still need to redraw if zoom/pan changed,
                 # even if underlying data is the same. For now, assume this check is sufficient.
                 return  # Нет необходимости перерисовывать
             
@@ -752,7 +752,7 @@ class ChartManager:
                            width,
                            volumes[i],
                            facecolor=color, # alpha уже в цвете
-                           edgecolor=color) 
+                           edgecolor=color)
             self.volume_ax.add_patch(rect)
             new_volume_bars.append(rect)
         self.volume_bars = new_volume_bars

@@ -72,7 +72,7 @@ class TestDataManager(unittest.TestCase):
         mock_response_initial.json.return_value = initial_data
         mock_response_initial.raise_for_status = MagicMock()
         mock_get.return_value = mock_response_initial
-        
+
         self.dm.get_kline_data(limit=5)
         self.assertEqual(len(self.dm.df), 5)
         self.assertIsNotNone(self.dm.last_kline_timestamp)
@@ -80,13 +80,13 @@ class TestDataManager(unittest.TestCase):
 
         # Delta update
         # Simulate time passing for the data_update_interval check to pass
-        self.dm.last_data_update = time.time() - (self.dm.data_update_interval + 1) 
-        
+        self.dm.last_data_update = time.time() - (self.dm.data_update_interval + 1)
+
         # New data starts 1ms after the last candle's open time
         # last_kline_timestamp is the OPEN time of the last candle
         new_data_start_ts = self.dm.last_kline_timestamp + 1 * 60 * 1000 # Next minute
         delta_data = create_sample_kline_data(new_data_start_ts, 2, interval_minutes=1) # 2 new candles
-        
+
         mock_response_delta = MagicMock()
         mock_response_delta.json.return_value = delta_data
         mock_response_delta.raise_for_status = MagicMock()
@@ -108,7 +108,7 @@ class TestDataManager(unittest.TestCase):
         # Test if DataFrame is correctly truncated
         initial_limit = 20
         max_len_expected = initial_limit * 2 # As per current logic in DataManager
-        
+
         # Simulate fetching more data than max_df_len
         # First load (initial_limit)
         start_ts = int(datetime(2023, 1, 1, 0, 0, 0).timestamp() * 1000)
@@ -128,22 +128,22 @@ class TestDataManager(unittest.TestCase):
         mock_response2.json.return_value = data2
         mock_response2.raise_for_status = MagicMock()
         mock_get.return_value = mock_response2
-        
+
         self.dm.get_kline_data(limit=initial_limit) # limit for initial load context
-        
+
         self.assertEqual(len(self.dm.df), max_len_expected)
 
 
     @patch('requests.get')
     def test_get_kline_data_api_error(self, mock_get):
         mock_get.side_effect = requests.exceptions.RequestException("API is down")
-        
+
         # Ensure df remains None or its old state if API fails
         self.dm.df = pd.DataFrame({'close': [1,2,3]}) # Simulate existing data
         original_df = self.dm.df.copy()
 
         returned_df = self.dm.get_kline_data(limit=10)
-        
+
         self.dm.on_error.assert_called_with("Ошибка API запроса klines: API is down")
         self.assertTrue(returned_df.equals(original_df)) # Should return old data
 
@@ -154,16 +154,16 @@ class TestDataManager(unittest.TestCase):
             'high':  [102, 103, 102, 108, 105, 101, 99],
             'low':   [99,  100, 99,  103, 102, 98,  97],
             'close': [101, 102, 101, 107, 104, 99,  98],
-            'volume':[1000,1500,1200,2000,1800,2200,2500] 
+            'volume':[1000,1500,1200,2000,1800,2200,2500]
         }
         index = pd.to_datetime([f'2023-01-01 00:0{i}:00' for i in range(len(data['open']))])
         self.dm.df = pd.DataFrame(data, index=index)
-        
+
         # Make volume significant for all candles to simplify testing clustering
-        self.dm.df['volume'] = self.dm.df['volume'] * 10 
+        self.dm.df['volume'] = self.dm.df['volume'] * 10
 
         zones = self.dm.calculate_density_zones(volume_threshold=0.1) # Low threshold
-        
+
         self.assertIsNotNone(zones)
         self.assertIsInstance(zones, list)
         # Further assertions would depend on the exact clustering logic and expected zones
@@ -185,13 +185,13 @@ class TestDataManager(unittest.TestCase):
             'volume':[100]*11 # Uniform volume
         }
         self.dm.df = pd.DataFrame(data, index=pd.to_datetime(np.arange(11), unit='D', origin='2023-01-01'))
-        
+
         # Define a mock cluster that would produce a known zone
         # The previous error was due to trying to mock a non-existent method '_simple_distance_clustering'.
         # We will test the vectorized logic directly without mocking internal parts of calculate_density_zones for this specific aspect.
         # Let's assume a zone around price 10, width 4 (so range 8 to 12)
         # mock_cluster = [9.0, 9.5, 10.0, 10.5, 11.0, 11.5] # Mean ~10.25
-            
+
         # Simplified version: create a zone manually and test touches against df
         zone_center = 10.0
         zone_half_width = 2.0 # So zone is [8, 12]
@@ -209,15 +209,15 @@ class TestDataManager(unittest.TestCase):
         # Candle 9: no.
         # Candle 10: no.
         # Total: 4
-            
+
         # Vectorized calculation
         zone_min = zone_center - zone_half_width
         zone_max = zone_center + zone_half_width
-            
+
         low_within_zone = (self.dm.df['low'] >= zone_min) & (self.dm.df['low'] <= zone_max)
         high_within_zone = (self.dm.df['high'] >= zone_min) & (self.dm.df['high'] <= zone_max)
         passed_through_center = (self.dm.df['low'] < zone_center) & (self.dm.df['high'] > zone_center)
-            
+
         any_touch_in_candle = low_within_zone | high_within_zone | passed_through_center
         touches = any_touch_in_candle.sum()
         self.assertEqual(touches, 4)
@@ -233,7 +233,7 @@ class TestDataManager(unittest.TestCase):
     # The existing assertions for the vectorized logic are fine.
         # Simplified version: create a zone manually and test touches against df
         # zone_center = 10.0 # This was part of the unindented block, ensure it's correctly placed or removed if not needed
-        # zone_half_width = 2.0 
+        # zone_half_width = 2.0
         # ... rest of the logic was fine, the issue was the 'with patch' removal and not unindenting the block below it.
         # The actual test logic for vectorized touches is already present from line 207 in the previous file version.
         # I will ensure the lines from "zone_center = 10.0" are correctly indented.
@@ -261,15 +261,15 @@ class TestDataManager(unittest.TestCase):
             # Candle 9: no.
             # Candle 10: no.
             # Total: 4
-            
+
             # Vectorized calculation
         zone_min = zone_center - zone_half_width
         zone_max = zone_center + zone_half_width
-            
+
         low_within_zone = (self.dm.df['low'] >= zone_min) & (self.dm.df['low'] <= zone_max)
         high_within_zone = (self.dm.df['high'] >= zone_min) & (self.dm.df['high'] <= zone_max)
         passed_through_center = (self.dm.df['low'] < zone_center) & (self.dm.df['high'] > zone_center)
-            
+
         any_touch_in_candle = low_within_zone | high_within_zone | passed_through_center
         touches = any_touch_in_candle.sum()
         self.assertEqual(touches, 4)
@@ -288,8 +288,8 @@ class TestDataManager(unittest.TestCase):
         for col_idx in numeric_columns: self.dm.df[col_idx] = self.dm.df[col_idx].astype(float)
         self.dm.df[0] = pd.to_datetime(self.dm.df[0], unit='ms')
         self.dm.df.set_index(0, inplace=True)
-        self.dm.df.columns = ['open', 'high', 'low', 'close', 'volume', 'close_time', 
-                              'quote_asset_volume', 'number_of_trades', 
+        self.dm.df.columns = ['open', 'high', 'low', 'close', 'volume', 'close_time',
+                              'quote_asset_volume', 'number_of_trades',
                               'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore']
 
         zones = self.dm.calculate_density_zones(volume_threshold=1.1) # Threshold too high
@@ -300,15 +300,15 @@ class TestDataManager(unittest.TestCase):
         self.dm.df = pd.DataFrame({'A': [1]})
         self.dm.density_zones = [{'center': 100}]
         self.dm.last_kline_timestamp = 1234567890000
-        
+
         self.dm.set_symbol_interval("ETHUSDT", "5m")
-        
+
         self.assertEqual(self.dm.symbol, "ETHUSDT")
         self.assertEqual(self.dm.interval, "5m")
         self.assertIsNone(self.dm.df) # Should be cleared
         self.assertIsNone(self.dm.last_kline_timestamp) # Should be cleared
         self.assertEqual(self.dm.density_zones, []) # Should be cleared
-        
+
         # Custom check for DataFrame argument in mock call
         self.dm.on_data_updated.assert_called_once()
         args, _ = self.dm.on_data_updated.call_args

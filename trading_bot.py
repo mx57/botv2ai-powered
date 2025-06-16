@@ -1,15 +1,17 @@
 import os # For checking environment variable
-import tkinter as tk
-from tkinter import ttk, messagebox, colorchooser
+# import tkinter as tk # Moved
+# from tkinter import ttk, messagebox, colorchooser # Moved
 import logging
 import warnings
-import os
+# import os # os is already imported
 import time
 import requests
 import threading
 from datetime import datetime, timedelta
+from collections import deque
 
-from collections import deque # Ensure deque is imported for log_queue
+# Conditional Tkinter imports will be inside __init__
+
 # Импорт модульных компонентов
 from data_manager import DataManager
 from chart_manager import ChartManager
@@ -80,9 +82,23 @@ except ImportError:
 
 class TradingBot:
     def __init__(self):
+        # Initialize logging attributes FIRST to prevent AttributeError
+        # These must be set before any call to self.log_message can occur.
+        # 'deque' needs to be imported from 'collections' at the top of the file.
+        self.log_queue = deque(maxlen=1000)
+        self.log_timer_active = False
+        self.log_update_interval = 250  # milliseconds
+        self.log_text_widget = None # Will be assigned in create_log_panel if UI runs
+
         self.is_profiling_run = os.environ.get("RUNNING_PROFILER_CONCEPTUAL") == "1"
+        self.root = None # Initialize root, will be overridden if UI runs
+        self.chart_frame = None # Initialize chart_frame, will be overridden if UI runs
 
         if not self.is_profiling_run:
+            global tk, ttk, messagebox, colorchooser # Make them available if imported
+            import tkinter as tk
+            from tkinter import ttk, messagebox, colorchooser
+
             self.root = tk.Tk()
             self.root.title("🚀 Advanced Trading Bot v2.0 - AI Enhanced")
             self.root.geometry("1600x1000")
@@ -148,13 +164,10 @@ class TradingBot:
         # Инициализация интерфейса
         if not self.is_profiling_run:
             self.create_ui_components()
-        else:
-            # Setup dummy UI components or ensure they are not accessed if UI is skipped
-            self.log_text_widget = None # Crucial for log_message
-            self.log_queue = deque(maxlen=200)
-            self.log_timer_active = False
-            self.log_update_interval = 200
-
+        # else:
+            # For profiling run, log_text_widget remains None.
+            # log_queue, log_timer_active, log_update_interval were already set up above.
+            # No redundant setup of these attributes here.
 
         # Запуск получения данных
         self.start_data_stream()
@@ -384,7 +397,7 @@ class TradingBot:
             self.log_message("Начало асинхронной проверки торговых сигналов...", "DEBUG")
             current_price = df_copy.iloc[-1]['close']
             current_timestamp = df_copy.index[-1]
-            
+
             local_features_to_predict = None
             with self.ml_feature_lock:
                 if self.latest_features_for_prediction is not None:
@@ -398,7 +411,7 @@ class TradingBot:
             if local_features_to_predict is not None:
                 self.log_message(f"Подготовлены признаки для предсказания: {local_features_to_predict.shape}", "DEBUG")
                 prediction_result = self.ml_manager.predict(local_features_to_predict, current_timestamp, current_price)
-                
+
                 if prediction_result:
                     signal = prediction_result['signal']
                     probability = prediction_result['probability']
@@ -432,37 +445,37 @@ class TradingBot:
 
     # Удалены старые переменные, которые были перемещены или заменены менеджерами
     # def __init__(self): # Старая инициализация некоторых переменных, которые теперь в менеджерах или не нужны
-        
+
         # self.df = None # Управляется DataManager
         # self.density_zones = [] # Управляется DataManager
         # self.orderbook_data = {'bids': [], 'asks': []} # Управляется DataManager
         # self.ws = None # Управляется DataManager
         # self.price_history = deque(maxlen=1000) # Управляется DataManager
         # self.volume_history = deque(maxlen=1000) # Управляется DataManager
-        
+
         # ML модели - управляются MLManager
         # self.ml_models = {}
         # self.model_performance = {}
         # self.current_model = 'RandomForest' # Уже инициализировано выше
         # if SKLEARN_AVAILABLE:
-        #     self.scaler = RobustScaler() 
+        #     self.scaler = RobustScaler()
         # else:
         #     self.scaler = None
-        
+
         # Настройки графика - управляются SettingsManager и ChartManager
         # self.chart_settings = { ... }
-        
+
         # Технические индикаторы - параметры могут быть частью SettingsManager
         # self.indicators = { ... }
-        
+
         # Создание интерфейса - вызывается в __init__
         # self.create_interface()
         # if SKLEARN_AVAILABLE:
-        #    self.setup_ml_model() 
-        
+        #    self.setup_ml_model()
+
         # Загрузка сохраненных настроек - SettingsManager
         # self.load_settings()
-        
+
         # Запуск обновления данных - start_data_stream
         # self.update_data()
         # if WEBSOCKET_AVAILABLE:
@@ -2403,7 +2416,7 @@ class TradingBot:
         self.log_queue = deque(maxlen=200) # Очередь для логов
         self.log_timer_active = False
         self.log_update_interval = 200 # мс, как часто обновлять виджет логов
-    
+
     @profile_me(filename_prefix="tb_process_log_queue")
     def _process_log_queue(self):
         """Обработка очереди логов и обновление виджета Tkinter."""
@@ -2420,7 +2433,7 @@ class TradingBot:
             for message, level in log_batch:
                 self.log_text_widget.insert(tk.END, message, level)
             self.log_text_widget.see(tk.END) # Прокрутка только один раз после всех вставок
-        
+
         if self.log_queue: # Если за время обработки пришли новые сообщения
             self.root.after(self.log_update_interval, self._process_log_queue)
         else:
@@ -2431,7 +2444,7 @@ class TradingBot:
         timestamp = datetime.now().strftime("%H:%M:%S")
         # Добавляем уровень в начало сообщения для простоты парсинга при необходимости
         # или можно передавать level отдельно в _process_log_queue
-        log_entry = f"[{timestamp}] {message}\n" 
+        log_entry = f"[{timestamp}] {message}\n"
         
         self.log_queue.append((log_entry, level.upper()))
 
@@ -2638,7 +2651,7 @@ if __name__ == "__main__":
     #     exit()
 
     bot = TradingBot()
-    
+
     # Simulate a few update cycles
     num_cycles = 5 # Number of simulated update cycles
     bot.log_message(f"Starting {num_cycles} simulated update cycles for profiling.", "INFO")
@@ -2649,7 +2662,7 @@ if __name__ == "__main__":
 
         # 1. Simulate DataManager calls (as done in TradingBot.update_data)
         print("Profiling: bot.data_manager.get_kline_data()")
-        bot.data_manager.get_kline_data() 
+        bot.data_manager.get_kline_data()
         
         if bot.settings['chart']['show_density_zones']:
             print("Profiling: bot.data_manager.calculate_density_zones()")
@@ -2663,8 +2676,8 @@ if __name__ == "__main__":
                 print("Profiling: bot._update_ml_features_async()")
                 # In real app, this is threaded. For profiling the core logic, call directly or manage thread.
                 # Calling directly to ensure it runs and generates a profile for its content.
-                bot._update_ml_features_async(df_copy) 
-        
+                bot._update_ml_features_async(df_copy)
+
         # 3. Simulate trading signal checks (as done in TradingBot.update_data)
         if bot.settings['trading']['auto_trading']:
             df_copy_signal = None
@@ -2696,7 +2709,7 @@ if __name__ == "__main__":
         # The log processing is triggered by a timer in log_message.
         # Forcing a direct call here to ensure it's profiled within this loop if timer is too long.
         if bot.log_queue: # Process only if there's something
-            bot._process_log_queue() 
+            bot._process_log_queue()
 
         # 6. Simulate WebSocket message (if WS was actually running)
         # This is hard to truly simulate without a live WS server.
@@ -2710,7 +2723,7 @@ if __name__ == "__main__":
             time.sleep(0.5) # Shorter delay between cycles for faster profiling
 
     bot.log_message("Conceptual profiling run finished.", "INFO")
-    
+
     # Ensure all queued logs are processed before exiting simulation
     print("Processing any remaining logs before exit...")
     if bot.log_queue:
@@ -2727,10 +2740,10 @@ if __name__ == "__main__":
         if bot.root:
             bot.root.destroy()
     except tk.TclError:
-        pass 
+        pass
     except Exception as e:
         print(f"Error destroying root window: {e}")
-        
+
     # Example of how to manually print stats for generated files later:
     # from profiling_utils import print_profile_stats
     # import glob

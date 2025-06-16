@@ -46,7 +46,7 @@ class DataManager:
             self.density_zones = [] # Сброс зон плотности
             if self.on_data_updated: # Уведомляем UI об очистке данных
                 # Передаем пустой DataFrame и пустые зоны, чтобы UI очистился
-                self.on_data_updated(pd.DataFrame(), []) 
+                self.on_data_updated(pd.DataFrame(), [])
             self.restart_websocket()
     
     @profile_me(filename_prefix="dm_get_kline_data")
@@ -65,7 +65,7 @@ class DataManager:
                     if (current_time - self.last_kline_timestamp.timestamp()/1000 > min_candle_interval * 0.9): # 0.9 для небольшого запаса
                         pass # Продолжаем для обновления дельты
                     else:
-                        return self.df 
+                        return self.df
                 else: # Если last_kline_timestamp еще не установлен (первый запуск)
                     return self.df
 
@@ -96,7 +96,7 @@ class DataManager:
                 if self.on_log: self.on_log(f"API klines call successful for {self.symbol}, params: {params}. Got {len(data)} records.", "DEBUG")
             except requests.exceptions.HTTPError as http_err:
                 if self.on_error: self.on_error(f"HTTP ошибка при получении klines: {http_err} - {response.text if 'response' in locals() and hasattr(response, 'text') else 'No response text'}")
-                return self.df 
+                return self.df
             except requests.exceptions.ConnectionError as conn_err:
                 if self.on_error: self.on_error(f"Ошибка соединения при получении klines: {conn_err}")
                 return self.df
@@ -110,7 +110,7 @@ class DataManager:
 
             if not data: # API call was successful but returned no data
                 if self.on_log: self.on_log("Нет новых данных о свечах от API.", "DEBUG")
-                self.last_data_update = current_time 
+                self.last_data_update = current_time
                 return self.df
 
             # Преобразование данных в DataFrame
@@ -138,13 +138,13 @@ class DataManager:
                 original_len = len(self.df)
                 if not new_df_from_api.empty:
                     self.df = self.df[self.df.index < new_df_from_api.index[0]]
-                
+
                 self.df = pd.concat([self.df, new_df_from_api])
                 self.df = self.df[~self.df.index.duplicated(keep='last')]
                 self.df.sort_index(inplace=True)
                 if self.on_log: self.on_log(f"Обновлено {len(self.df) - original_len} свечей. Всего: {len(self.df)}", "DEBUG")
 
-            max_df_len = limit * 2 
+            max_df_len = limit * 2
             if len(self.df) > max_df_len:
                self.df = self.df.iloc[-max_df_len:]
                if self.on_log: self.on_log(f"Размер DataFrame ограничен до {len(self.df)} свечей.", "DEBUG")
@@ -211,13 +211,13 @@ class DataManager:
                 price_arrays.append(np.repeat(high_volume['high'].values, weights_low_high))
                 price_arrays.append(np.repeat(high_volume['open'].values, weights_open_close))
                 price_arrays.append(np.repeat(high_volume['close'].values, weights_open_close))
-            
+
             if not price_arrays:
                 if self.on_log: self.on_log("Не удалось создать массивы цен из свечей с высоким объемом.", "DEBUG")
                 return []
             
             price_array = np.concatenate(price_arrays).reshape(-1, 1)
-            
+
             if price_array.size == 0:
                 if self.on_log: self.on_log("Массив цен для кластеризации пуст.", "DEBUG")
                 return []
@@ -230,8 +230,8 @@ class DataManager:
             current_cluster_elements = [current_cluster_price_anchor]
             
             price_range = df['high'].max() - df['low'].min()
-            if price_range == 0: 
-                distance_threshold = 0.001 
+            if price_range == 0:
+                distance_threshold = 0.001
             else:
                 distance_threshold = price_range * 0.01
             
@@ -259,13 +259,13 @@ class DataManager:
             
             for cluster_element_list in clusters:
                 center = np.mean(cluster_element_list)
-                width = np.std(cluster_element_list) * 2 
+                width = np.std(cluster_element_list) * 2
                 
                 zone_type = 'resistance' if center > last_close_price else 'support'
                 
                 # Сила зоны на основе количества точек
                 strength = len(cluster_element_list) / price_array.size if price_array.size > 0 else 0
-                
+
                 # Vectorized "touches" calculation
                 zone_min_touch = center - width / 2
                 zone_max_touch = center + width / 2
@@ -273,12 +273,12 @@ class DataManager:
                 low_touches = (df['low'] >= zone_min_touch) & (df['low'] <= zone_max_touch)
                 high_touches = (df['high'] >= zone_min_touch) & (df['high'] <= zone_max_touch)
                 passed_through = (df['low'] <= center) & (df['high'] >= center)
-                
+
                 calculated_touches = (low_touches | high_touches | passed_through).sum()
                 
                 zones.append({
                     'center': center,
-                    'width': max(width, price_range * 0.005), 
+                    'width': max(width, price_range * 0.005),
                     'type': zone_type,
                     'strength': strength,
                     'touches': calculated_touches
@@ -343,8 +343,8 @@ class DataManager:
 
         if is_current_ws_instance:
             # If self.ws is None, it means stop_websocket was called, so it's an expected closure.
-            is_expected_manual_close = (self.ws is None) 
-            
+            is_expected_manual_close = (self.ws is None)
+
             if is_expected_manual_close:
                 if self.on_log: self.on_log(f"WebSocket соединение для {self.symbol} закрыто пользователем (stop_websocket).", "INFO")
             elif close_status_code == 1000 or close_status_code == 1001:
@@ -352,13 +352,13 @@ class DataManager:
             else: # Unexpected close for the current WebSocket instance
                 if self.on_log:
                     self.on_log(f"WebSocket соединение для {self.symbol} неожиданно закрыто (код: {close_status_code}, причина: {close_msg}). Попытка переподключения через 5 секунд.", "WARNING")
-                
+
                 # Cancel any existing reconnection timer before starting a new one
                 if hasattr(self, 'ws_recon_timer') and self.ws_recon_timer is not None and self.ws_recon_timer.is_alive():
                     self.ws_recon_timer.cancel()
-                
+
                 self.ws_recon_timer = threading.Timer(5.0, self.start_websocket)
-                self.ws_recon_timer.daemon = True 
+                self.ws_recon_timer.daemon = True
                 self.ws_recon_timer.start()
         else: # Close event from an old WebSocket instance
              if self.on_log: self.on_log(f"Получено событие закрытия от старого/неактивного WebSocket соединения для {self.symbol} (код: {close_status_code}).", "DEBUG")
@@ -391,7 +391,7 @@ class DataManager:
                                            on_error=self.on_websocket_error,
                                            on_close=self.on_websocket_close,
                                            on_open=self._on_websocket_open) # Added on_open callback
-            self.ws = current_ws 
+            self.ws = current_ws
             
             ws_thread = threading.Thread(target=lambda: current_ws.run_forever(ping_interval=30, ping_timeout=10), daemon=True)
             ws_thread.name = f"WebSocketThread-{self.symbol}" # Naming thread for easier debugging
@@ -407,17 +407,17 @@ class DataManager:
     def restart_websocket(self):
         """Перезапуск WebSocket соединения"""
         if self.on_log: self.on_log(f"Перезапуск WebSocket для {self.symbol} инициирован...", "INFO")
-        
+
         current_ws_instance = self.ws # Store current ws instance
         self.ws = None # Signal that this is an intentional stop for on_websocket_close
-        
+
         if current_ws_instance and hasattr(current_ws_instance, 'keep_running') and current_ws_instance.keep_running:
             if self.on_log: self.on_log("Остановка существующего WebSocket соединения перед перезапуском...", "DEBUG")
             try:
                 current_ws_instance.close()
             except Exception as e:
                 if self.on_error: self.on_error(f"Ошибка при закрытии старого WebSocket сокета при перезапуске: {e}", "WARNING")
-        
+
         # Запуск нового соединения будет инициирован через on_close или напрямую, если ws уже был None
         # Для большей предсказуемости, вызываем start_websocket напрямую.
         # on_close для старого сокета теперь не должен вызывать start_websocket из-за self.ws = None
