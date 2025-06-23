@@ -8,6 +8,9 @@ import websocket
 from datetime import datetime, timedelta
 from collections import deque
 from profiling_utils import profile_me # Import the decorator
+import logging
+
+logger = logging.getLogger(__name__)
 
 class DataManager:
     """Модуль для управления данными торгового бота"""
@@ -31,14 +34,13 @@ class DataManager:
         # Колбэки для обновления UI
         self.on_data_updated = None
         self.on_orderbook_updated = None
-        self.on_error = None
-        self.on_log = None
+        # self.on_error = None # Replaced by logger
+        # self.on_log = None # Replaced by logger
     
     def set_symbol_interval(self, symbol, interval):
         """Установка символа и интервала"""
         if symbol != self.symbol or interval != self.interval:
-            if self.on_log:
-                self.on_log(f"Смена символа/интервала с {self.symbol}/{self.interval} на {symbol}/{interval}", "INFO")
+            logger.info(f"Смена символа/интервала с {self.symbol}/{self.interval} на {symbol}/{interval}")
             self.symbol = symbol
             self.interval = interval
             self.df = None # Сброс DataFrame при смене символа/интервала
@@ -79,7 +81,7 @@ class DataManager:
             if self.df is None or self.last_kline_timestamp is None:
                 # Начальная загрузка или если нет сохраненного времени последней свечи
                 params['limit'] = limit
-                if self.on_log: self.on_log(f"Начальная загрузка {limit} свечей для {self.symbol} {self.interval}", "INFO")
+                logger.info(f"Начальная загрузка {limit} свечей для {self.symbol} {self.interval}")
             else:
                 # Загрузка только новых свечей
                 # Binance API startTime is inclusive, endTime is exclusive
@@ -87,29 +89,28 @@ class DataManager:
                 # last_kline_timestamp - это время открытия свечи, храним его в мс
                 params['startTime'] = self.last_kline_timestamp + 1 # +1 мс, чтобы не включать предыдущую
                 # params['limit'] = limit # Можно ограничить, но API вернет только новые
-                if self.on_log: self.on_log(f"Запрос новых свечей для {self.symbol} {self.interval} с {pd.to_datetime(params['startTime'], unit='ms')}", "INFO")
+                logger.info(f"Запрос новых свечей для {self.symbol} {self.interval} с {pd.to_datetime(params['startTime'], unit='ms')}")
 
             try:
                 response = requests.get(url, params=params, timeout=10) # Добавлен таймаут
                 response.raise_for_status() # Проверка на HTTP ошибки
                 data = response.json()
-                if self.on_log: self.on_log(f"API klines call successful for {self.symbol}, params: {params}. Got {len(data)} records.", "DEBUG")
+                logger.debug(f"API klines call successful for {self.symbol}, params: {params}. Got {len(data)} records.")
             except requests.exceptions.HTTPError as http_err:
-                if self.on_error: self.on_error(f"HTTP ошибка при получении klines: {http_err} - {response.text if 'response' in locals() and hasattr(response, 'text') else 'No response text'}")
+                logger.error(f"HTTP ошибка при получении klines: {http_err} - {response.text if 'response' in locals() and hasattr(response, 'text') else 'No response text'}")
                 return self.df 
             except requests.exceptions.ConnectionError as conn_err:
-                if self.on_error: self.on_error(f"Ошибка соединения при получении klines: {conn_err}")
+                logger.error(f"Ошибка соединения при получении klines: {conn_err}")
                 return self.df
             except requests.exceptions.Timeout as timeout_err:
-                if self.on_error: self.on_error(f"Таймаут при получении klines: {timeout_err}")
+                logger.error(f"Таймаут при получении klines: {timeout_err}")
                 return self.df
             except requests.exceptions.RequestException as e: # More general requests exception
-                if self.on_error:
-                    self.on_error(f"Ошибка API запроса klines: {e}")
+                logger.error(f"Ошибка API запроса klines: {e}")
                 return self.df # Возвращаем старые данные в случае ошибки сети/API
 
             if not data: # API call was successful but returned no data
-                if self.on_log: self.on_log("Нет новых данных о свечах от API.", "DEBUG")
+                logger.debug("Нет новых данных о свечах от API.")
                 self.last_data_update = current_time 
                 return self.df
 
@@ -119,7 +120,7 @@ class DataManager:
                                            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
             
             if new_df_from_api.empty:
-                if self.on_log: self.on_log("API вернул пустой набор данных для свечей (после DataFrame).", "DEBUG")
+                logger.debug("API вернул пустой набор данных для свечей (после DataFrame).")
                 self.last_data_update = current_time
                 return self.df
 
@@ -133,7 +134,7 @@ class DataManager:
 
             if self.df is None or self.last_kline_timestamp is None:
                 self.df = new_df_from_api
-                if self.on_log: self.on_log(f"Инициализировано {len(self.df)} свечей.", "INFO")
+                logger.info(f"Инициализировано {len(self.df)} свечей.")
             else:
                 original_len = len(self.df)
                 if not new_df_from_api.empty:
@@ -142,18 +143,18 @@ class DataManager:
                 self.df = pd.concat([self.df, new_df_from_api])
                 self.df = self.df[~self.df.index.duplicated(keep='last')]
                 self.df.sort_index(inplace=True)
-                if self.on_log: self.on_log(f"Обновлено {len(self.df) - original_len} свечей. Всего: {len(self.df)}", "DEBUG")
+                logger.debug(f"Обновлено {len(self.df) - original_len} свечей. Всего: {len(self.df)}")
 
             max_df_len = limit * 2 
             if len(self.df) > max_df_len:
                self.df = self.df.iloc[-max_df_len:]
-               if self.on_log: self.on_log(f"Размер DataFrame ограничен до {len(self.df)} свечей.", "DEBUG")
+               logger.debug(f"Размер DataFrame ограничен до {len(self.df)} свечей.")
 
             if not self.df.empty:
                 new_kline_ts = int(self.df.index[-1].timestamp() * 1000)
                 if self.last_kline_timestamp != new_kline_ts:
                     self.last_kline_timestamp = new_kline_ts
-                    if self.on_log: self.on_log(f"Время последней свечи обновлено: {pd.to_datetime(self.last_kline_timestamp, unit='ms')}", "DEBUG")
+                    logger.debug(f"Время последней свечи обновлено: {pd.to_datetime(self.last_kline_timestamp, unit='ms')}")
             
             self.last_data_update = current_time
             
@@ -162,32 +163,30 @@ class DataManager:
                 self.volume_history.append(self.df.iloc[-1]['volume'])
             
             if (current_time - self.last_density_calc) > 10.0: # Density calc interval
-                if self.on_log: self.on_log("Запуск расчета зон плотности...", "DEBUG")
+                logger.debug("Запуск расчета зон плотности...")
                 self.calculate_density_zones() # Assuming this method has its own error handling
                 self.last_density_calc = current_time
             
             if self.on_data_updated:
                 self.on_data_updated(self.df, self.density_zones if hasattr(self, 'density_zones') else [])
             
-            if self.on_log:
-                self.on_log(f"Данные {self.symbol} ({self.interval}) успешно обновлены. Записей: {len(self.df)}", "INFO")
+            logger.info(f"Данные {self.symbol} ({self.interval}) успешно обновлены. Записей: {len(self.df)}")
                 
             return self.df
             
         except Exception as e: # Catch-all for any other unexpected error during processing
-            if self.on_error:
-                self.on_error(f"Непредвиденная ошибка в get_kline_data: {e}")
+            logger.error(f"Непредвиденная ошибка в get_kline_data: {e}", exc_info=True)
             return self.df # Return existing df if any, otherwise it might be None
     
     @profile_me(filename_prefix="dm_calculate_density_zones")
     def calculate_density_zones(self, volume_threshold=0.7):
         """Расчет зон плотности на основе объема и цены"""
         if self.df is None or len(self.df) < 20:
-            if self.on_log: self.on_log("Недостаточно данных для расчета зон плотности (DataFrame пуст или слишком мал).", "DEBUG")
+            logger.debug("Недостаточно данных для расчета зон плотности (DataFrame пуст или слишком мал).")
             return [] # Возвращаем пустой список, если данных недостаточно
         
         try:
-            if self.on_log: self.on_log(f"Начало расчета зон плотности. Всего свечей: {len(self.df)}", "DEBUG")
+            logger.debug(f"Начало расчета зон плотности. Всего свечей: {len(self.df)}")
             df = self.df.copy()
             
             # Нормализация объема
@@ -197,7 +196,7 @@ class DataManager:
             high_volume = df[df['volume_norm'] > volume_threshold]
             
             if len(high_volume) == 0:
-                if self.on_log: self.on_log("Нет свечей с высоким объемом для расчета зон.", "DEBUG")
+                logger.debug("Нет свечей с высоким объемом для расчета зон.")
                 return []
             
             # Кластеризация цен
@@ -213,13 +212,13 @@ class DataManager:
                 price_arrays.append(np.repeat(high_volume['close'].values, weights_open_close))
             
             if not price_arrays:
-                if self.on_log: self.on_log("Не удалось создать массивы цен из свечей с высоким объемом.", "DEBUG")
+                logger.debug("Не удалось создать массивы цен из свечей с высоким объемом.")
                 return []
             
             price_array = np.concatenate(price_arrays).reshape(-1, 1)
             
             if price_array.size == 0:
-                if self.on_log: self.on_log("Массив цен для кластеризации пуст.", "DEBUG")
+                logger.debug("Массив цен для кластеризации пуст.")
                 return []
             
             # Простая кластеризация на основе расстояния
@@ -250,7 +249,7 @@ class DataManager:
                 clusters.append(list(current_cluster_elements))
             
             if not clusters:
-                if self.on_log: self.on_log("Не найдено кластеров цен после фильтрации.", "DEBUG")
+                logger.debug("Не найдено кластеров цен после фильтрации.")
                 return []
 
             # Создание зон плотности
@@ -287,14 +286,12 @@ class DataManager:
             zones.sort(key=lambda x: x['strength'], reverse=True)
             self.density_zones = zones[:10]
             
-            if self.on_log:
-                self.on_log(f"Расчет зон плотности завершен. Найдено {len(self.density_zones)} зон.", "INFO")
+            logger.info(f"Расчет зон плотности завершен. Найдено {len(self.density_zones)} зон.")
                 
             return self.density_zones
             
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка расчета зон плотности: {e}")
+            logger.error(f"Ошибка расчета зон плотности: {e}", exc_info=True)
             self.density_zones = [] # Clear zones in case of error
             return []
     
@@ -320,22 +317,20 @@ class DataManager:
                 # Вызов колбэка обновления стакана
                 if self.on_orderbook_updated:
                     self.on_orderbook_updated(self.orderbook_data)
-                if self.on_log: self.on_log(f"Данные стакана заявок для {self.symbol} обновлены через WebSocket.", "DEBUG")
+                logger.debug(f"Данные стакана заявок для {self.symbol} обновлены через WebSocket.")
                 
         except json.JSONDecodeError as json_err:
-            if self.on_error: self.on_error(f"Ошибка декодирования JSON из WebSocket для {self.symbol}: {json_err} - Сообщение: {message[:100]}...", "ERROR")
+            logger.error(f"Ошибка декодирования JSON из WebSocket для {self.symbol}: {json_err} - Сообщение: {message[:100]}...")
         except Exception as e: # Catch other potential errors
-            if self.on_error:
-                self.on_error(f"Непредвиденная ошибка обработки WebSocket сообщения для {self.symbol}: {e}")
+            logger.error(f"Непредвиденная ошибка обработки WebSocket сообщения для {self.symbol}: {e}", exc_info=True)
     
     def on_websocket_error(self, ws, error):
         """Обработка ошибок WebSocket"""
         # Проверяем, относится ли ошибка к текущему активному соединению
         if self.ws == ws: # Check if the error is from the current WebSocket instance
-            if self.on_error:
-                self.on_error(f"WebSocket ошибка для {self.symbol}: {error}", "ERROR")
+            logger.error(f"WebSocket ошибка для {self.symbol}: {error}")
         # else: # Error from an old/stale WebSocket instance, can be ignored or logged as debug
-            # if self.on_log: self.on_log(f"Получена ошибка от старого/неактивного WebSocket соединения: {error}", "DEBUG")
+            # logger.debug(f"Получена ошибка от старого/неактивного WebSocket соединения: {error}")
 
     def on_websocket_close(self, ws, close_status_code, close_msg):
         """Обработка закрытия WebSocket"""
@@ -346,12 +341,11 @@ class DataManager:
             is_expected_manual_close = (self.ws is None) 
             
             if is_expected_manual_close:
-                if self.on_log: self.on_log(f"WebSocket соединение для {self.symbol} закрыто пользователем (stop_websocket).", "INFO")
+                logger.info(f"WebSocket соединение для {self.symbol} закрыто пользователем (stop_websocket).")
             elif close_status_code == 1000 or close_status_code == 1001:
-                if self.on_log: self.on_log(f"WebSocket соединение для {self.symbol} закрыто штатно (код: {close_status_code}, причина: {close_msg}).", "INFO")
+                logger.info(f"WebSocket соединение для {self.symbol} закрыто штатно (код: {close_status_code}, причина: {close_msg}).")
             else: # Unexpected close for the current WebSocket instance
-                if self.on_log:
-                    self.on_log(f"WebSocket соединение для {self.symbol} неожиданно закрыто (код: {close_status_code}, причина: {close_msg}). Попытка переподключения через 5 секунд.", "WARNING")
+                logger.warning(f"WebSocket соединение для {self.symbol} неожиданно закрыто (код: {close_status_code}, причина: {close_msg}). Попытка переподключения через 5 секунд.")
                 
                 # Cancel any existing reconnection timer before starting a new one
                 if hasattr(self, 'ws_recon_timer') and self.ws_recon_timer is not None and self.ws_recon_timer.is_alive():
@@ -361,13 +355,12 @@ class DataManager:
                 self.ws_recon_timer.daemon = True 
                 self.ws_recon_timer.start()
         else: # Close event from an old WebSocket instance
-             if self.on_log: self.on_log(f"Получено событие закрытия от старого/неактивного WebSocket соединения для {self.symbol} (код: {close_status_code}).", "DEBUG")
+             logger.debug(f"Получено событие закрытия от старого/неактивного WebSocket соединения для {self.symbol} (код: {close_status_code}).")
 
 
     def _on_websocket_open(self, ws):
         """Колбэк при открытии WebSocket соединения."""
-        if self.on_log:
-            self.on_log(f"WebSocket соединение для {self.symbol} успешно открыто.", "SUCCESS")
+        logger.info(f"WebSocket соединение для {self.symbol} успешно открыто.")
 
     def start_websocket(self):
         """Запуск WebSocket для стакана заявок"""
@@ -375,13 +368,13 @@ class DataManager:
             # Cancel any pending reconnection timer if start is called explicitly
             if hasattr(self, 'ws_recon_timer') and self.ws_recon_timer is not None and self.ws_recon_timer.is_alive():
                 self.ws_recon_timer.cancel()
-                if self.on_log: self.on_log("Таймер переподключения WebSocket отменен из-за ручного запуска.", "DEBUG")
+                logger.debug("Таймер переподключения WebSocket отменен из-за ручного запуска.")
 
             if self.ws and hasattr(self.ws, 'sock') and self.ws.sock and self.ws.sock.connected:
-                if self.on_log: self.on_log(f"WebSocket для {self.symbol} уже подключен или в процессе подключения. Для перезапуска используйте restart_websocket.", "DEBUG")
+                logger.debug(f"WebSocket для {self.symbol} уже подключен или в процессе подключения. Для перезапуска используйте restart_websocket.")
                 return
 
-            if self.on_log: self.on_log(f"Попытка запуска WebSocket для {self.symbol}...", "INFO")
+            logger.info(f"Попытка запуска WebSocket для {self.symbol}...")
             
             symbol_lower = self.symbol.lower()
             ws_url = f"wss://stream.binance.com:9443/ws/{symbol_lower}@depth20@100ms"
@@ -397,26 +390,24 @@ class DataManager:
             ws_thread.name = f"WebSocketThread-{self.symbol}" # Naming thread for easier debugging
             ws_thread.start()
             
-            if self.on_log:
-                self.on_log(f"Поток WebSocket для {self.symbol} запущен.", "DEBUG")
+            logger.debug(f"Поток WebSocket для {self.symbol} запущен.")
             
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Критическая ошибка при запуске WebSocket для {self.symbol}: {e}", "ERROR")
+            logger.error(f"Критическая ошибка при запуске WebSocket для {self.symbol}: {e}", exc_info=True)
     
     def restart_websocket(self):
         """Перезапуск WebSocket соединения"""
-        if self.on_log: self.on_log(f"Перезапуск WebSocket для {self.symbol} инициирован...", "INFO")
+        logger.info(f"Перезапуск WebSocket для {self.symbol} инициирован...")
         
         current_ws_instance = self.ws # Store current ws instance
         self.ws = None # Signal that this is an intentional stop for on_websocket_close
         
         if current_ws_instance and hasattr(current_ws_instance, 'keep_running') and current_ws_instance.keep_running:
-            if self.on_log: self.on_log("Остановка существующего WebSocket соединения перед перезапуском...", "DEBUG")
+            logger.debug("Остановка существующего WebSocket соединения перед перезапуском...")
             try:
                 current_ws_instance.close()
             except Exception as e:
-                if self.on_error: self.on_error(f"Ошибка при закрытии старого WebSocket сокета при перезапуске: {e}", "WARNING")
+                logger.warning(f"Ошибка при закрытии старого WebSocket сокета при перезапуске: {e}", exc_info=True)
         
         # Запуск нового соединения будет инициирован через on_close или напрямую, если ws уже был None
         # Для большей предсказуемости, вызываем start_websocket напрямую.
@@ -429,11 +420,9 @@ class DataManager:
             if hasattr(self, 'ws') and self.ws:
                 self.ws.close()
                 self.ws = None
-                if self.on_log:
-                    self.on_log("WebSocket соединение закрыто", "INFO")
+                logger.info("WebSocket соединение закрыто")
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка при остановке WebSocket: {e}")
+            logger.error(f"Ошибка при остановке WebSocket: {e}", exc_info=True)
     
     def stop(self):
         """Остановка всех процессов"""

@@ -7,6 +7,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from collections import deque
+import logging
+
+logger = logging.getLogger(__name__)
 
 class MLManager:
     """Модуль для управления ML-моделью торгового бота"""
@@ -24,8 +27,8 @@ class MLManager:
         
         # Колбэки для обновления UI
         self.on_training_complete = None
-        self.on_error = None
-        self.on_log = None
+        # self.on_error = None # Replaced by logger
+        # self.on_log = None # Replaced by logger
     
     def prepare_features(self, df, for_prediction=False):
         """Подготовка признаков для модели.
@@ -118,8 +121,7 @@ class MLManager:
             return X, y
             
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка подготовки признаков: {e}")
+            logger.error(f"Ошибка подготовки признаков: {e}", exc_info=True)
             return None if for_prediction else (None, None)
     
     def train_model(self, df):
@@ -166,26 +168,24 @@ class MLManager:
             self.accuracy = accuracy
             self.last_train_time = time.time()
             
-            if self.on_log:
-                self.on_log(f"Модель обучена. Точность: {accuracy:.2f}", "SUCCESS")
+            logger.info(f"Модель обучена. Точность: {accuracy:.2f}")
             
             # Вызов колбэка завершения обучения
             if self.on_training_complete:
                 self.on_training_complete(accuracy)
             
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка обучения модели: {e}")
+            logger.error(f"Ошибка обучения модели: {e}", exc_info=True)
         finally:
             self.is_training = False
     
     def predict(self, features_last_row, current_timestamp=None, current_price=None):
         """Прогнозирование сигналов торговли на основе уже подготовленной последней строки признаков."""
         if self.model is None:
-            if self.on_log: self.on_log("Модель не обучена, предсказание невозможно.", "WARNING")
+            logger.warning("Модель не обучена, предсказание невозможно.")
             return None
         if features_last_row is None:
-            if self.on_log: self.on_log("Нет признаков для предсказания.", "WARNING")
+            logger.warning("Нет признаков для предсказания.")
             return None
         
         # Ensure features_last_row is 2D for scaler and model
@@ -215,8 +215,7 @@ class MLManager:
             }
             
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка прогнозирования: {e}")
+            logger.error(f"Ошибка прогнозирования: {e}", exc_info=True)
             return None
     
     def get_model_info(self):

@@ -4,6 +4,9 @@ import json
 import requests
 from datetime import datetime
 from collections import deque
+import logging
+
+logger = logging.getLogger(__name__)
 
 class TradingManager:
     """Модуль для управления торговыми операциями"""
@@ -40,8 +43,8 @@ class TradingManager:
         # Колбэки для обновления UI
         self.on_position_update = None
         self.on_order_update = None
-        self.on_error = None
-        self.on_log = None
+        # self.on_error = None # Replaced by logger
+        # self.on_log = None # Replaced by logger
     
     def set_trading_params(self, leverage=None, risk_percent=None, 
                           take_profit_percent=None, stop_loss_percent=None,
@@ -65,8 +68,7 @@ class TradingManager:
         if trailing_percent is not None:
             self.trailing_percent = max(0.1, trailing_percent)
         
-        if self.on_log:
-            self.on_log(f"Параметры торговли обновлены", "INFO")
+        logger.info(f"Параметры торговли обновлены: Leverage: {self.leverage}, Risk: {self.risk_percent}%, TP: {self.take_profit_percent}%, SL: {self.stop_loss_percent}%")
     
     def process_signal(self, signal, price, timestamp=None):
         """Обработка торгового сигнала"""
@@ -128,8 +130,7 @@ class TradingManager:
             self.total_trades += 1
             
             # Логирование
-            if self.on_log:
-                self.on_log(f"Открыта {position_type} позиция по {self.symbol} по цене {price:.2f}", "SUCCESS")
+            logger.info(f"Открыта {position_type} позиция по {self.symbol} по цене {price:.2f}. Size: {position_size:.4f}, TP: {take_profit:.2f}, SL: {stop_loss:.2f}")
             
             # Вызов колбэка обновления позиции
             if self.on_position_update:
@@ -138,8 +139,7 @@ class TradingManager:
             return True
             
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка открытия позиции: {e}")
+            logger.error(f"Ошибка открытия позиции: {e}", exc_info=True)
             return False
     
     def close_position(self, price, timestamp, reason='SIGNAL'):
@@ -183,13 +183,13 @@ class TradingManager:
             self.positions_history.append(self.position.copy())
             
             # Логирование
-            if self.on_log:
-                self.on_log(f"Закрыта {self.position['type']} позиция по {self.symbol}. P&L: {pnl:.2f} ({pnl_percent:.2f}%)", 
-                         "SUCCESS" if pnl > 0 else "WARNING")
+            log_level = "INFO" if pnl > 0 else "WARNING"
+            logger.log(getattr(logging, log_level.upper(), logging.INFO),
+                       f"Закрыта {self.position['type']} позиция по {self.symbol} ({reason}). Price: {price:.2f}, P&L: {pnl:.2f} ({pnl_percent:.2f}%)")
             
             # Вызов колбэка обновления позиции
             if self.on_position_update:
-                self.on_position_update(self.position)
+                self.on_position_update(self.position) # Pass the closed position state
             
             # Сброс текущей позиции
             self.position = None
@@ -197,8 +197,7 @@ class TradingManager:
             return True
             
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка закрытия позиции: {e}")
+            logger.error(f"Ошибка закрытия позиции: {e}", exc_info=True)
             return False
     
     def update_position(self, price):
@@ -246,8 +245,7 @@ class TradingManager:
                         self.position['trailing_activation'] = True
                         self.position['trailing_price'] = price
                         
-                        if self.on_log:
-                            self.on_log(f"Активирован трейлинг-стоп по цене {price:.2f}", "INFO")
+                        logger.info(f"Активирован трейлинг-стоп по цене {price:.2f} для позиции {self.position['type']} {self.symbol}")
                 
                 # Обновление трейлинг-стопа
                 if self.position['trailing_activation']:
@@ -286,8 +284,7 @@ class TradingManager:
             self.last_position_update = current_time
             
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка обновления позиции: {e}")
+            logger.error(f"Ошибка обновления позиции: {e}", exc_info=True)
     
     def calculate_position_size(self, price):
         """Расчет размера позиции на основе риска"""

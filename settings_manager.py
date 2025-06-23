@@ -3,6 +3,9 @@ import pickle
 import json
 import time
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 class SettingsManager:
     """Модуль для управления настройками торгового бота"""
@@ -13,8 +16,8 @@ class SettingsManager:
         
         # Колбэки для обновления UI
         self.on_settings_updated = None
-        self.on_error = None
-        self.on_log = None
+        # self.on_error = None # Replaced by logger
+        # self.on_log = None # Replaced by logger
         
         # Загрузка настроек после инициализации колбэков
         self.load_settings()
@@ -90,8 +93,7 @@ class SettingsManager:
                 # Обновление настроек по умолчанию загруженными
                 self.update_nested_dict(self.settings, loaded_settings)
                 
-                if self.on_log:
-                    self.on_log(f"Настройки загружены из {self.settings_file}", "INFO")
+                logger.info(f"Настройки загружены из {self.settings_file}")
                 
                 # Вызов колбэка обновления настроек
                 if self.on_settings_updated:
@@ -99,13 +101,11 @@ class SettingsManager:
                 
                 return True
             else:
-                if self.on_log:
-                    self.on_log(f"Файл настроек не найден. Используются настройки по умолчанию.", "WARNING")
+                logger.warning(f"Файл настроек не найден. Используются настройки по умолчанию.")
                 return False
                 
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка загрузки настроек: {e}")
+            logger.error(f"Ошибка загрузки настроек: {e}", exc_info=True)
             return False
     
     def save_settings(self):
@@ -117,14 +117,12 @@ class SettingsManager:
             with open(self.settings_file, 'wb') as f:
                 pickle.dump(self.settings, f)
             
-            if self.on_log:
-                self.on_log(f"Настройки сохранены в {self.settings_file}", "SUCCESS")
+            logger.info(f"Настройки сохранены в {self.settings_file}")
             
             return True
             
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка сохранения настроек: {e}")
+            logger.error(f"Ошибка сохранения настроек: {e}", exc_info=True)
             return False
     
     def update_settings(self, category, settings_dict):
@@ -143,13 +141,11 @@ class SettingsManager:
                 
                 return True
             else:
-                if self.on_error:
-                    self.on_error(f"Категория настроек '{category}' не найдена")
+                logger.error(f"Категория настроек '{category}' не найдена")
                 return False
                 
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка обновления настроек: {e}")
+            logger.error(f"Ошибка обновления настроек: {e}", exc_info=True)
             return False
     
     def get_settings(self, category=None):
@@ -168,14 +164,12 @@ class SettingsManager:
             with open(file_path, 'w') as f:
                 json.dump(settings_copy, f, indent=4)
             
-            if self.on_log:
-                self.on_log(f"Настройки экспортированы в {file_path}", "SUCCESS")
+            logger.info(f"Настройки экспортированы в {file_path}")
             
             return True
             
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка экспорта настроек: {e}")
+            logger.error(f"Ошибка экспорта настроек: {e}", exc_info=True)
             return False
     
     def import_settings(self, file_path):
@@ -198,8 +192,7 @@ class SettingsManager:
             # Сохранение настроек
             self.save_settings()
             
-            if self.on_log:
-                self.on_log(f"Настройки импортированы из {file_path}", "SUCCESS")
+            logger.info(f"Настройки импортированы из {file_path}")
             
             # Вызов колбэка обновления настроек
             if self.on_settings_updated:
@@ -208,8 +201,7 @@ class SettingsManager:
             return True
             
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка импорта настроек: {e}")
+            logger.error(f"Ошибка импорта настроек: {e}", exc_info=True)
             return False
     
     def reset_settings(self, category=None):
@@ -221,8 +213,7 @@ class SettingsManager:
                 if category in self.settings and category in default_settings:
                     self.settings[category] = default_settings[category]
                 else:
-                    if self.on_error:
-                        self.on_error(f"Категория настроек '{category}' не найдена")
+                    logger.error(f"Категория настроек '{category}' не найдена")
                     return False
             else:
                 self.settings = default_settings
@@ -230,8 +221,7 @@ class SettingsManager:
             # Сохранение настроек
             self.save_settings()
             
-            if self.on_log:
-                self.on_log(f"Настройки сброшены до значений по умолчанию", "INFO")
+            logger.info(f"Настройки сброшены до значений по умолчанию")
             
             # Вызов колбэка обновления настроек
             if self.on_settings_updated:
@@ -240,8 +230,7 @@ class SettingsManager:
             return True
             
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Ошибка сброса настроек: {e}")
+            logger.error(f"Ошибка сброса настроек: {e}", exc_info=True)
             return False
     
     def update_nested_dict(self, d, u):

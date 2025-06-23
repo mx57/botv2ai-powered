@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Bot</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1>Trading Bot Interface</h1>
+
+    <div class="section">
+        <h2>Settings</h2>
+        <button onclick="fetchSettings()">Fetch Settings</button>
+        <pre id="settings-display"></pre>
+    </div>
+
+    <div class="section">
+        <h2>Market Data (K-lines)</h2>
+        <button onclick="fetchKlines()">Fetch K-lines</button>
+        <pre id="klines-display"></pre>
+        <canvas id="kline-chart" width="400" height="200"></canvas>
+    </div>
+
+    <div class="section">
+        <h2>ML Model</h2>
+        <button onclick="trainModel()">Train ML Model</button>
+        <button onclick="fetchPrediction()">Get ML Prediction</button>
+        <pre id="ml-prediction-display"></pre>
+    </div>
+
+    <div class="section">
+        <h2>Density Zones</h2>
+        <button onclick="fetchDensityZones()">Fetch Density Zones</button>
+        <pre id="density-zones-display"></pre>
+    </div>
+
+    <div class="section">
+        <h2>Trading</h2>
+        <button onclick="fetchTradingStatus()">Get Trading Status</button>
+        <pre id="trading-status-display"></pre>
+        <div>
+            <label for="trade-signal">Signal (BUY/SELL):</label>
+            <input type="text" id="trade-signal" value="BUY">
+            <label for="trade-price">Price:</label>
+            <input type="number" id="trade-price" step="0.01" value="50000">
+            <button onclick="makeTrade()">Make Trade</button>
+        </div>
+        <div>
+            <label for="close-price">Close Price:</label>
+            <input type="number" id="close-price" step="0.01" value="50000">
+            <button onclick="closeTrade()">Close Position</button>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>

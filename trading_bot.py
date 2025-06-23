@@ -142,19 +142,19 @@ class TradingBot:
         self.signal_check_interval = 5 # секунд, как часто проверять сигналы
         
         # Инициализация ML-моделей и скейлера
-        if SKLEARN_AVAILABLE:
-            self.setup_ml_model()
-        
-        # Инициализация интерфейса
+        # Инициализация интерфейса или заглушек для логирования должна произойти до первого вызова log_message
         if not self.is_profiling_run:
-            self.create_ui_components()
+            self.create_ui_components() # Это создаст self.log_queue и другие UI элементы
         else:
             # Setup dummy UI components or ensure they are not accessed if UI is skipped
+            # Это должно быть до вызова setup_ml_model, так как setup_ml_model может вызывать log_message
             self.log_text_widget = None # Crucial for log_message
             self.log_queue = deque(maxlen=200)
             self.log_timer_active = False
             self.log_update_interval = 200
 
+        if SKLEARN_AVAILABLE:
+            self.setup_ml_model()
 
         # Запуск получения данных
         self.start_data_stream()
@@ -216,13 +216,27 @@ class TradingBot:
     def schedule_data_update(self):
         """Планирование регулярного обновления данных"""
         update_interval_ms = self.settings['general']['update_interval'] * 1000
-        self.update_data()
-        self.root.after(update_interval_ms, self.schedule_data_update)
+        self.update_data() # Call update_data first
+        if self.root and not self.is_profiling_run: # Only schedule if root exists and not in profiling
+            self.root.after(update_interval_ms, self.schedule_data_update)
+        elif self.is_profiling_run:
+            self.log_message("Profiling run: data update scheduling via UI skipped.", "DEBUG")
+        else: # Should not happen if logic is correct, but good for robustness
+            self.log_message("UI not present (self.root is None), data update scheduling skipped.", "WARNING")
+
     
     # @profile_me(filename_prefix="tb_update_data") # Profiling applied to the original
     def update_data(self): # This is the original update_data, will be decorated later
         """Обновление данных"""
         try:
+            # Always use settings as the source of truth for symbol and interval
+            symbol_to_use = self.settings['trading']['symbol']
+            interval_to_use = self.settings['trading']['interval']
+
+            # Update DataManager's symbol and interval before fetching data
+            self.data_manager.symbol = symbol_to_use
+            self.data_manager.interval = interval_to_use
+
             # Получение новых данных через DataManager
             self.data_manager.get_kline_data()
             
@@ -364,8 +378,12 @@ class TradingBot:
             else:
                 self.log_message("Не удалось подготовить ML признаки (features_last_row is None).", "WARNING")
         except Exception as e:
-            # Логируем ошибку в основной поток
-            self.root.after(0, self.log_message, f"Ошибка в _update_ml_features_async: {e}", "ERROR")
+            # Логируем ошибку
+            log_message_text = f"Ошибка в _update_ml_features_async: {e}"
+            if self.root and not self.is_profiling_run:
+                self.root.after(0, self.log_message, log_message_text, "ERROR")
+            else: # Direct log if UI or its event loop is not available
+                self.log_message(log_message_text, "ERROR")
 
     @profile_me(filename_prefix="tb_check_trading_signals_async")
     def _check_trading_signals_async(self, df_copy):
@@ -410,8 +428,12 @@ class TradingBot:
             else:
                 self.log_message("Не удалось подготовить ML признаки для проверки сигнала.", "ERROR")
         except Exception as e:
-            # Логируем ошибку в основной поток
-            self.root.after(0, self.log_message, f"Ошибка в _check_trading_signals_async: {e}", "ERROR")
+            # Логируем ошибку
+            log_message_text = f"Ошибка в _check_trading_signals_async: {e}"
+            if self.root and not self.is_profiling_run:
+                self.root.after(0, self.log_message, log_message_text, "ERROR")
+            else: # Direct log if UI or its event loop is not available
+                self.log_message(log_message_text, "ERROR")
 
 
     def check_trading_signals(self):
@@ -1571,15 +1593,20 @@ class TradingBot:
                 # Кэширование результата
                 self.ml_cache[data_signature] = True
                 
-                # Логирование в основном потоке
-                self.root.after(0, lambda: self.log_message(
-                    f"Модель {self.current_model} обучена. Тест: {test_accuracy*100:.2f}%, CV: {cv_scores.mean()*100:.2f}%±{cv_scores.std()*100:.2f}%", 
-                    "SUCCESS"
-                ))
+                # Логирование в основном потоке или напрямую
+                log_success_msg = f"Модель {self.current_model} обучена. Тест: {test_accuracy*100:.2f}%, CV: {cv_scores.mean()*100:.2f}%±{cv_scores.std()*100:.2f}%"
+                if self.root and not self.is_profiling_run:
+                    self.root.after(0, lambda: self.log_message(log_success_msg, "SUCCESS"))
+                else:
+                    self.log_message(log_success_msg, "SUCCESS")
                 
             except Exception as e:
                 error_msg = str(e)  # Сохраняем сообщение об ошибке в переменную
-                self.root.after(0, lambda error=error_msg: self.log_message(f"Ошибка обучения ML модели: {error}", "ERROR"))
+                log_error_msg = f"Ошибка обучения ML модели: {error_msg}"
+                if self.root and not self.is_profiling_run:
+                    self.root.after(0, lambda: self.log_message(log_error_msg, "ERROR"))
+                else:
+                    self.log_message(log_error_msg, "ERROR")
         
         # Запуск обучения в отдельном потоке
         threading.Thread(target=train_async, daemon=True).start()
@@ -1809,8 +1836,17 @@ class TradingBot:
             current_price = self.df['close'].iloc[-1]
             price_change = ((current_price / self.df['close'].iloc[-2] - 1) * 100) if len(self.df) > 1 else 0
             
+            # Use settings for display, especially robust for profiling mode
+            display_symbol = self.settings['trading']['symbol']
+            display_interval = self.settings['trading']['interval']
+            # Check if UI variables exist (i.e., not in profiling mode and UI is initialized)
+            if not self.is_profiling_run and hasattr(self, 'symbol_var') and self.symbol_var.get():
+                display_symbol = self.symbol_var.get()
+            if not self.is_profiling_run and hasattr(self, 'interval_var') and self.interval_var.get():
+                display_interval = self.interval_var.get()
+
             self.ax_price.set_title(
-                f'📈 {self.symbol_var.get()} - {self.interval_var.get()} | '
+                f'📈 {display_symbol} - {display_interval} | '
                 f'Цена: ${current_price:.2f} | '
                 f'Изменение: {price_change:+.2f}% | '
                 f'Объем: {self.df["volume"].iloc[-1]:,.0f}',
@@ -1950,10 +1986,14 @@ class TradingBot:
             
         try:
             if self.ws:
-                self.ws.close()
+                try:
+                    self.ws.close()
+                except Exception as e:
+                    self.log_message(f"Ошибка при закрытии WebSocket: {e}", "DEBUG")
             
-            symbol = self.symbol_var.get().lower()
-            ws_url = f"wss://stream.binance.com:9443/ws/{symbol}@depth20@100ms"
+            # Use settings directly for symbol
+            symbol_to_use = self.settings['trading']['symbol'].lower()
+            ws_url = f"wss://stream.binance.com:9443/ws/{symbol_to_use}@depth20@100ms"
             
             self.ws = websocket.WebSocketApp(ws_url,
                                            on_message=self.on_websocket_message,
@@ -2182,20 +2222,23 @@ class TradingBot:
             self.log_message(f"Ошибка обновления информации: {e}", "ERROR")
     
     def update_data(self):
-        """Оптимизированное обновление данных"""
+        """Оптимизированное обновление данных (старый метод, новый update_data выше)"""
         try:
             # Проверка на слишком частые обновления
             current_time = time.time()
-            if hasattr(self, 'last_full_update') and (current_time - self.last_full_update) < 2.0:
+            if hasattr(self, 'last_full_update') and (current_time - self.last_full_update) < 2.0: # This is an old update_data
                 return
             
-            self.symbol = self.symbol_var.get()
-            self.interval = self.interval_var.get()
+            # Use settings as the source of truth
+            symbol_to_use = self.settings['trading']['symbol']
+            interval_to_use = self.settings['trading']['interval']
             
-            self.log_message(f"Обновление данных для {self.symbol} ({self.interval})...")
+            self.log_message(f"Обновление данных для {symbol_to_use} ({interval_to_use})...") # Uses new var names
             
-            # Получение новых данных
-            new_df = self.get_kline_data(self.symbol, self.interval)
+            # Ensure DataManager is aligned with current settings before fetching
+            self.data_manager.symbol = symbol_to_use
+            self.data_manager.interval = interval_to_use
+            new_df = self.data_manager.get_kline_data() # DataManager uses its own updated props
             
             if new_df is not None:
                 # Проверка на изменения данных
@@ -2229,19 +2272,19 @@ class TradingBot:
                 self.check_trading_signals()
                 
                 # Перезапуск WebSocket для новой пары
-                if WEBSOCKET_AVAILABLE:
+                if WEBSOCKET_AVAILABLE and not self.is_profiling_run : # Avoid WS in profiling if problematic
                     self.start_websocket()
                 
-                if hasattr(self, 'status_label'):
+                if hasattr(self, 'status_label') and not self.is_profiling_run:
                     self.status_label.config(text="📡 Обновлено", style='Success.TLabel')
                 
             else:
-                if hasattr(self, 'status_label'):
+                if hasattr(self, 'status_label') and not self.is_profiling_run:
                     self.status_label.config(text="❌ Ошибка данных", style='Error.TLabel')
                 
         except Exception as e:
             self.log_message(f"Ошибка обновления данных: {e}", "ERROR")
-            if hasattr(self, 'status_label'):
+            if hasattr(self, 'status_label') and not self.is_profiling_run: # Check profiling run
                 self.status_label.config(text="❌ Ошибка", style='Error.TLabel')
     
     def toggle_trading(self):
@@ -2435,11 +2478,13 @@ class TradingBot:
         
         self.log_queue.append((log_entry, level.upper()))
 
-        if not self.log_timer_active:
-            self.log_timer_active = True
-            self.root.after(self.log_update_interval, self._process_log_queue)
+        # Schedule UI update of the log widget only if UI is active
+        if not self.is_profiling_run and self.root and hasattr(self, 'log_text_widget') and self.log_text_widget:
+            if not self.log_timer_active:
+                self.log_timer_active = True
+                self.root.after(self.log_update_interval, self._process_log_queue)
         
-        # Логирование через стандартный логгер Python
+        # Standard Python logging should always occur
         py_level = getattr(logging, level.upper(), logging.INFO)
         logger.log(py_level, message)
     
@@ -2544,13 +2589,14 @@ class TradingBot:
     
     def update_ui_with_settings(self):
         """Обновление интерфейса в соответствии с настройками"""
-        # Обновление контролов
-        self.symbol_var.set(self.settings['trading']['symbol'])
-        self.interval_var.set(self.settings['trading']['interval'])
-        self.auto_trading_var.set(self.settings['trading']['auto_trading'])
-        
-        # Обновление настроек графика
-        self.show_volume_var.set(self.settings['chart']['show_volume'])
+        if not self.is_profiling_run: # UI elements only exist if not profiling
+            # Обновление контролов
+            self.symbol_var.set(self.settings['trading']['symbol'])
+            self.interval_var.set(self.settings['trading']['interval'])
+            self.auto_trading_var.set(self.settings['trading']['auto_trading'])
+
+            # Обновление настроек графика
+            self.show_volume_var.set(self.settings['chart']['show_volume'])
         self.show_orderbook_var.set(self.settings['chart']['show_orderbook'])
         self.show_density_var.set(self.settings['chart']['show_density_zones'])
         
@@ -2583,12 +2629,15 @@ class TradingBot:
             self.log_message("📊 Инициализация модульной структуры...")
             self.log_message("🔗 Подключение к Binance API...")
             
-            # Горячие клавиши
-            self.root.bind('<F5>', lambda e: self.update_data())
-            self.root.bind('<F1>', lambda e: self.show_help())
-            
-            # Запуск главного цикла
-            self.root.mainloop()
+            if not self.is_profiling_run and self.root:
+                # Горячие клавиши
+                self.root.bind('<F5>', lambda e: self.update_data())
+                self.root.bind('<F1>', lambda e: self.show_help())
+
+                # Запуск главного цикла
+                self.root.mainloop()
+            elif self.is_profiling_run:
+                self.log_message("Профилировочный запуск, главный цикл UI пропущен.", "INFO")
             
         except KeyboardInterrupt:
             self.log_message("Получен сигнал прерывания", "ERROR")
@@ -2629,111 +2678,5 @@ class TradingBot:
 
 # Точка входа
 if __name__ == "__main__":
-    # Conceptual run for profiling
-    print("Starting conceptual run for profiling...")
-    # Ensure profiler is enabled in profiling_utils.py
-    # from profiling_utils import PROFILER_ENABLED
-    # if not PROFILER_ENABLED:
-    #     print("PROFILER_ENABLED is False in profiling_utils.py. No profiling data will be generated.")
-    #     exit()
-
     bot = TradingBot()
-    
-    # Simulate a few update cycles
-    num_cycles = 5 # Number of simulated update cycles
-    bot.log_message(f"Starting {num_cycles} simulated update cycles for profiling.", "INFO")
-
-    for i in range(num_cycles):
-        print(f"\n--- Profiling Cycle {i+1}/{num_cycles} ---")
-        bot.log_message(f"--- Profiling Cycle {i+1}/{num_cycles} ---", "INFO")
-
-        # 1. Simulate DataManager calls (as done in TradingBot.update_data)
-        print("Profiling: bot.data_manager.get_kline_data()")
-        bot.data_manager.get_kline_data() 
-        
-        if bot.settings['chart']['show_density_zones']:
-            print("Profiling: bot.data_manager.calculate_density_zones()")
-            bot.data_manager.calculate_density_zones()
-
-        # 2. Simulate ML feature preparation (as done in TradingBot.update_data)
-        if bot.settings['ml']['enabled'] and not bot.ml_manager.is_training:
-            df_copy = None
-            if bot.data_manager.df is not None and not bot.data_manager.df.empty and len(bot.data_manager.df) > 50:
-                df_copy = bot.data_manager.df.copy()
-                print("Profiling: bot._update_ml_features_async()")
-                # In real app, this is threaded. For profiling the core logic, call directly or manage thread.
-                # Calling directly to ensure it runs and generates a profile for its content.
-                bot._update_ml_features_async(df_copy) 
-        
-        # 3. Simulate trading signal checks (as done in TradingBot.update_data)
-        if bot.settings['trading']['auto_trading']:
-            df_copy_signal = None
-            if bot.data_manager.df is not None and not bot.data_manager.df.empty:
-                df_copy_signal = bot.data_manager.df.copy()
-                print("Profiling: bot._check_trading_signals_async()")
-                # Calling directly for profiling.
-                bot._check_trading_signals_async(df_copy_signal)
-                bot.last_signal_check_time = time.time()
-
-
-        # 4. Simulate ChartManager updates (as done in TradingBot.on_data_updated & update_ui_with_new_data)
-        # These are not decorated in chart_manager.py due to previous issues,
-        # but we call them to simulate the workflow.
-        # If they were decorated, their profiles would be generated here.
-        if bot.data_manager.df is not None:
-             print("Simulating: bot.chart_manager.update_data() and update_chart()")
-             bot.chart_manager.update_data(bot.data_manager.df, bot.data_manager.density_zones, bot.data_manager.orderbook_data)
-             # ChartManager.update_chart is decorated, so this call will be profiled if chart_manager.py was successfully modified.
-             # However, due to diff issues, we are assuming it might not have been.
-             # If it was, this direct call will profile it.
-             bot.chart_manager.update_chart()
-
-
-        # 5. Simulate some log processing
-        print("Profiling: bot._process_log_queue() via log_message")
-        for j in range(5): # Add a few messages
-            bot.log_message(f"Simulated log message {j} in cycle {i+1}", "DEBUG")
-        # The log processing is triggered by a timer in log_message.
-        # Forcing a direct call here to ensure it's profiled within this loop if timer is too long.
-        if bot.log_queue: # Process only if there's something
-            bot._process_log_queue() 
-
-        # 6. Simulate WebSocket message (if WS was actually running)
-        # This is hard to truly simulate without a live WS server.
-        # We'll rely on the decorator on on_websocket_message if it gets called by a test message.
-        # For now, we'll just note that it's a target.
-        # print("Note: DataManager.on_websocket_message is decorated for profiling.")
-
-
-        bot.log_message(f"--- End of Profiling Cycle {i+1}/{num_cycles} ---", "INFO")
-        if i < num_cycles - 1:
-            time.sleep(0.5) # Shorter delay between cycles for faster profiling
-
-    bot.log_message("Conceptual profiling run finished.", "INFO")
-    
-    # Ensure all queued logs are processed before exiting simulation
-    print("Processing any remaining logs before exit...")
-    if bot.log_queue:
-        bot._process_log_queue() # Force one last processing.
-    time.sleep(0.1) # Brief pause for any final async operations if any were truly async in this sim
-
-    print("\nConceptual Profiling Run Complete.")
-    print(f"Profile data should be in '{os.path.join(os.getcwd(), 'profiles')}' directory.")
-    print("Review the console output for summaries printed by the @profile_me decorator.")
-    print("NOTE: Since chart_manager.py decorators might not have applied, its profiling data might be missing.")
-
-    # Clean up Tkinter root window if it was created
-    try:
-        if bot.root:
-            bot.root.destroy()
-    except tk.TclError:
-        pass 
-    except Exception as e:
-        print(f"Error destroying root window: {e}")
-        
-    # Example of how to manually print stats for generated files later:
-    # from profiling_utils import print_profile_stats
-    # import glob
-    # profile_files = glob.glob("profiles/*.prof")
-    # for pf in profile_files:
-    #     print_profile_stats(pf)
+    bot.run()
