@@ -30,13 +30,13 @@ def profile_me(filename_prefix=None, sort_by='cumulative', top_n=15):
 
             prof = cProfile.Profile()
             start_time = time.time()
-            
+
             # Profile the function execution
             result = prof.runcall(func, *args, **kwargs)
-            
+
             end_time = time.time()
             duration = end_time - start_time
-            
+
             # Create a unique filename for the profile data
             func_name = filename_prefix if filename_prefix else func.__name__
             # Sanitize func_name for filename
@@ -54,7 +54,7 @@ def profile_me(filename_prefix=None, sort_by='cumulative', top_n=15):
             s = io.StringIO()
             ps = pstats.Stats(prof, stream=s).sort_stats(sort_by)
             ps.print_stats(top_n)
-            
+
             log_output_func = None
             # Try to find a logger or on_log callback on the instance if 'self' is an arg
             if args and hasattr(args[0], 'on_log'):
@@ -74,7 +74,7 @@ def profile_me(filename_prefix=None, sort_by='cumulative', top_n=15):
                 # log_output_func(log_message_content, "PROFILE") # Assuming a "PROFILE" level or similar
             else:
                 print(log_message_content)
-            
+
             s.close()
             return result
         return wrapper

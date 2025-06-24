@@ -113,7 +113,7 @@ class MLManager:
                 if len(X) == 0:
                     return None
                 return X[-1:] # Возвращаем только последний ряд признаков для предсказания
-            
+
             y = data['target'].values
             return X, y
             
@@ -191,7 +191,7 @@ class MLManager:
         # Ensure features_last_row is 2D for scaler and model
         if features_last_row.ndim == 1:
             features_last_row = features_last_row.reshape(1, -1)
-        
+
         try:
             X_last_scaled = self.scaler.transform(features_last_row)
             

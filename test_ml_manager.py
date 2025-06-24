@@ -37,22 +37,22 @@ class TestMLManager(unittest.TestCase):
     def test_prepare_features_basic_structure_train(self):
         """Test basic structure of X and y for training."""
         df = create_sample_df_for_ml(num_rows=50) # Needs enough rows for all rolling windows + target shift
-        
+
         X, y = self.ml_manager.prepare_features(df, for_prediction=False)
-        
+
         self.assertIsNotNone(X, "X should not be None")
         self.assertIsNotNone(y, "y should not be None")
-        
+
         # Expected number of features (based on ml_manager.py)
         # sma_5, sma_10, sma_20, ema_5, ema_10, ema_20,
         # bb_width, rsi, macd, macd_signal, macd_hist,
         # volume_ratio, body_size, upper_shadow, lower_shadow,
         # price_change, price_change_1, price_change_2, price_change_5,
         # volatility
-        expected_num_features = 20 
+        expected_num_features = 20
         self.assertEqual(X.shape[1], expected_num_features, f"Expected {expected_num_features} features")
         self.assertEqual(X.shape[0], y.shape[0], "X and y should have the same number of rows")
-        
+
         # Check for NaNs - after dropping, there should be none
         self.assertFalse(np.isnan(X).any(), "X should not contain NaNs after processing")
         self.assertFalse(np.isnan(y).any(), "y should not contain NaNs after processing")
@@ -69,9 +69,9 @@ class TestMLManager(unittest.TestCase):
     def test_prepare_features_for_prediction(self):
         """Test feature preparation for prediction mode."""
         df = create_sample_df_for_ml(num_rows=50)
-        
+
         X_last = self.ml_manager.prepare_features(df, for_prediction=True)
-        
+
         self.assertIsNotNone(X_last, "X_last should not be None")
         expected_num_features = 20
         self.assertEqual(X_last.shape[0], 1, "Should return only one row for prediction")
@@ -81,7 +81,7 @@ class TestMLManager(unittest.TestCase):
     def test_prepare_features_insufficient_data(self):
         """Test with insufficient data for feature calculation."""
         df_short = create_sample_df_for_ml(num_rows=10) # Less than min lookback (e.g., 20 for SMA/BB)
-        
+
         X_train, y_train = self.ml_manager.prepare_features(df_short, for_prediction=False)
         self.assertIsNone(X_train, "X should be None for very short data (training)")
         self.assertIsNone(y_train, "y should be None for very short data (training)")
@@ -98,9 +98,9 @@ class TestMLManager(unittest.TestCase):
         df['open'] = df['close'] - 1
         df['high'] = df['close'] + 1
         df['low'] = df['close'] -1
-        
+
         # Example: if 'close' was all NaNs (though our helper prevents this for 'close')
-        # df['close'] = np.nan 
+        # df['close'] = np.nan
         # X, y = self.ml_manager.prepare_features(df)
         # self.assertIsNone(X) # Or shape[0] == 0 depending on dropna
         # self.assertIsNone(y)
@@ -111,7 +111,7 @@ class TestMLManager(unittest.TestCase):
         # e.g. if a new raw column was added and used.
         # For current features, this is less likely due to robust helper.
         # This test mostly confirms that dropna() works.
-        
+
         X, y = self.ml_manager.prepare_features(df_with_some_nans)
         self.assertFalse(np.isnan(X).any())
         self.assertEqual(X.shape[0], y.shape[0])
@@ -121,27 +121,27 @@ class TestMLManager(unittest.TestCase):
     # and sklearn components. Their core custom logic is within prepare_features.
     def test_predict_calls_model_and_scaler(self):
         # Setup a dummy model and scaler on the manager
-        self.ml_manager.model = MagicMock(spec=GradientBoostingClassifier) 
+        self.ml_manager.model = MagicMock(spec=GradientBoostingClassifier)
         self.ml_manager.scaler = MagicMock(spec=StandardScaler)
-        
+
         # Configure the mocked methods on the instances
-        self.ml_manager.scaler.transform.return_value = np.array([[0.1] * 20]) 
-        self.ml_manager.model.predict.return_value = np.array([1]) 
+        self.ml_manager.scaler.transform.return_value = np.array([[0.1] * 20])
+        self.ml_manager.model.predict.return_value = np.array([1])
         self.ml_manager.model.predict_proba.return_value = np.array([[0.2, 0.8]])
 
         # Create sample features for one prediction
-        sample_features_last_row = np.random.rand(1, 20) 
-        
+        sample_features_last_row = np.random.rand(1, 20)
+
         dummy_timestamp = pd.Timestamp.now()
         dummy_price = 100.0
 
         prediction_result = self.ml_manager.predict(sample_features_last_row, dummy_timestamp, dummy_price)
-        
+
         self.assertIsNotNone(prediction_result, "Prediction result should not be None")
         self.ml_manager.scaler.transform.assert_called_once_with(sample_features_last_row)
         self.ml_manager.model.predict.assert_called_once_with(self.ml_manager.scaler.transform.return_value)
         self.ml_manager.model.predict_proba.assert_called_once_with(self.ml_manager.scaler.transform.return_value)
-        self.assertEqual(prediction_result['signal'], 'BUY') 
+        self.assertEqual(prediction_result['signal'], 'BUY')
         self.assertEqual(len(self.ml_manager.predictions_history), 1)
 
 
